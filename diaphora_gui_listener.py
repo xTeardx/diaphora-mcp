@@ -27,6 +27,19 @@ if os.path.isdir(PLUGINS_DIR):
 
 # Generic fallback placeholder if not found (user should customize)
 if not DIAPHORA_DIR:
+    # Check common install/plugin locations as candidate fallbacks
+    _candidates = [
+        r"D:\Programs\IDA Professional 9.3\plugins\diaphora-3.4.1",
+        r"D:\Programs\IDA 9.3\plugins\diaphora-3.4.1",
+        r"C:\Program Files\IDA Pro 9.3\plugins\diaphora-3.4.1",
+        r"C:\Program Files\IDA Pro 9.2\plugins\diaphora-3.4.1",
+    ]
+    for c in _candidates:
+        if os.path.isdir(c) and os.path.isfile(os.path.join(c, "diaphora.py")):
+            DIAPHORA_DIR = c
+            break
+
+if not DIAPHORA_DIR:
     DIAPHORA_DIR = r"C:\Path\To\IDA\plugins\diaphora-3.4.1"
 
 
