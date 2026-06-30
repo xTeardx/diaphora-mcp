@@ -10,6 +10,7 @@ import os
 import subprocess
 import threading
 import time
+import xmlrpc.client
 
 from ..config import IDAT_PATH, DIAPHORA_DIR, HEADLESS_WRAPPER, DIAPHORA_SCRIPT, PYTHON
 from ..utils.sqlite import check_db, check_db_for_diff, force_delete_file
@@ -34,7 +35,23 @@ def run_export(idb_path: str, output_path: str, use_decompiler: bool) -> str | N
     if not os.path.isfile(HEADLESS_WRAPPER):
         return f"Headless wrapper not found at {HEADLESS_WRAPPER}"
 
-    # Check if database lock files exist and are locked by a running GUI instance of IDA
+    # 1. Try exporting via active GUI IDA Pro session first
+    try:
+        client = xmlrpc.client.ServerProxy("http://127.0.0.1:28652")
+        if client.ping():
+            res = client.export_current_db(output_path, use_decompiler)
+            if res is True:
+                if check_db(output_path) is None:
+                    return None
+                else:
+                    return f"GUI export finished but database at {output_path} is invalid."
+            else:
+                return f"GUI export failed: {res}"
+    except (ConnectionRefusedError, OSError, xmlrpc.client.Fault):
+        # GUI server is not listening or ping failed, fall back to headless idat.exe
+        pass
+
+    # 2. Check if database lock files exist and are locked by a running GUI instance of IDA
     base = os.path.splitext(idb_path)[0]
     lock_files = [base + ext for ext in [".id0", ".id1", ".id2", ".nam", ".til"]]
     is_active_in_gui = False
