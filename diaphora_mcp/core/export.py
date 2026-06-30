@@ -34,11 +34,20 @@ def run_export(idb_path: str, output_path: str, use_decompiler: bool) -> str | N
     if not os.path.isfile(HEADLESS_WRAPPER):
         return f"Headless wrapper not found at {HEADLESS_WRAPPER}"
 
-    # Check if the database is currently locked by a running GUI instance of IDA
-    try:
-        with open(idb_path, "r+b") as f:
-            pass
-    except OSError:
+    # Check if database lock files exist and are locked by a running GUI instance of IDA
+    base = os.path.splitext(idb_path)[0]
+    lock_files = [base + ext for ext in [".id0", ".id1", ".id2", ".nam", ".til"]]
+    is_active_in_gui = False
+    for lf in lock_files:
+        if os.path.isfile(lf):
+            try:
+                with open(lf, "r+b") as f:
+                    pass
+            except OSError:
+                is_active_in_gui = True
+                break
+
+    if is_active_in_gui:
         return (
             f"The database {os.path.basename(idb_path)} is currently locked/active. "
             f"It is likely open in GUI IDA Pro. Please close it in the GUI first, "
