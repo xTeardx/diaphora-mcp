@@ -220,6 +220,11 @@ Tools like `analyze_diff_results`, `compare_functions`, and `find_function_match
 ┃ decompile_function(address="401000")
 ```
 
+## Examples
+
+To see Diaphora MCP in action, check out the following examples:
+- [Diffing sqlite3.dll (Python vs AIMP)](examples/sqlite3_example.md): A step-by-step guide to exporting, diffing, and comparing functions with different addresses using real-world DLLs on your system.
+
 ## License
 
 MIT
