@@ -19,7 +19,7 @@ def score_change(result_row: dict, sec_match: bool, complexity_chg: int,
     """Compute a single importance score for a changed function. 0–100."""
     score = 0.0
     mtype = result_row.get("type", "")
-    ratio = result_row.get("ratio", 0) or 0
+    ratio = float(result_row.get("ratio", 0) or 0)
 
     type_w = {"best": 10, "partial": 30, "unreliable": 20, "multimatch": 25}
     score += type_w.get(mtype, 15)
@@ -35,8 +35,8 @@ def score_change(result_row: dict, sec_match: bool, complexity_chg: int,
     score += min(complexity_chg * 3, 40)
     score += min(pseudo_diff_len * 0.5, 30)
 
-    n1 = result_row.get("nodes1", 0) or 0
-    n2 = result_row.get("nodes2", 0) or 0
+    n1 = int(result_row.get("nodes1", 0) or 0)
+    n2 = int(result_row.get("nodes2", 0) or 0)
     if n1 and n2:
         delta = abs(n2 - n1) / max(n1, 1)
         score += min(delta * 20, 20)

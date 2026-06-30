@@ -45,7 +45,7 @@ def summarize_patch(
         t = r.get("type", "unknown")
         by_type[t] = by_type.get(t, 0) + 1
 
-    ratios = [r.get("ratio", 0) or 0 for r in results]
+    ratios = [float(r.get("ratio", 0) or 0) for r in results]
     avg_ratio = round(sum(ratios) / max(len(ratios), 1), 3)
 
     # Security analysis

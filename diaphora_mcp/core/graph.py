@@ -105,9 +105,8 @@ def get_changed_callgraph(
     combined_names = {a: names1.get(a) or names2.get(a) or "?" for a in all_addrs}
 
     def _format_list(addrs):
-        return sorted(
-            {"address": a, "name": combined_names.get(a, "?")} for a in addrs
-        )
+        items = [{"address": a, "name": combined_names.get(a, "?")} for a in addrs]
+        return sorted(items, key=lambda x: x.get("address", ""))
 
     return json.dumps({
         "function_name_old": name1,

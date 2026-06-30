@@ -68,22 +68,38 @@ def analyze_diff_results(
     cur.execute("SELECT * FROM config")
     config_info = dict(cur.fetchone() or {})
 
-    cur.execute("SELECT * FROM matching_databases")
-    databases = [dict(r) for r in cur.fetchall()]
+    try:
+        cur.execute("SELECT * FROM matching_databases")
+        databases = [dict(r) for r in cur.fetchall()]
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        databases = []
 
-    db1_path = config_info.get("primary_database", "")
-    db2_path = config_info.get("secondary_database", "")
+    db1_path = config_info.get("main_db") or config_info.get("primary_database", "")
+    db2_path = config_info.get("diff_db") or config_info.get("secondary_database", "")
 
-    cur.execute(
-        """SELECT r.*, m1.pseudocode as pseudo1, m2.pseudocode as pseudo2,
-                  m1.assembly as asm1, m2.assembly as asm2,
-                  m1.name as name1, m2.name as name2,
-                  m1.address as addr1, m2.address as addr2
-           FROM results r
-           LEFT JOIN functions m1 ON r.address1 = m1.address
-           LEFT JOIN functions m2 ON r.address2 = m2.address"""
-    )
+    # Read all results from the .diaphora file directly (it has no functions table)
+    cur.execute("SELECT * FROM results")
     all_results = [dict(r) for r in cur.fetchall()]
+
+    # Enrich with pseudocode/assembly from the underlying databases
+    for row in all_results:
+        addr1 = row.get("address", "")
+        addr2 = row.get("address2", "")
+        # Look up function details from the source databases
+        if db1_path and addr1:
+            f1 = get_func(db1_path, address=addr1)
+            if f1:
+                row["name1"] = row.get("name1") or f1.get("name", "")
+                row["pseudo1"] = f1.get("pseudocode", "") or ""
+                row["asm1"] = f1.get("assembly", "") or ""
+                row["addr1"] = addr1
+        if db2_path and addr2:
+            f2 = get_func(db2_path, address=addr2)
+            if f2:
+                row["name2"] = row.get("name2") or f2.get("name", "")
+                row["pseudo2"] = f2.get("pseudocode", "") or ""
+                row["asm2"] = f2.get("assembly", "") or ""
+                row["addr2"] = addr2
 
     matches = []
     security_count = 0

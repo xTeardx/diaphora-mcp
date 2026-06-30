@@ -137,10 +137,11 @@ def get_diff_summary(results_path: str) -> str:
         return json.dumps({"error": f"Results file not found: {results_path}"})
 
     conn = sqlite3.connect(results_path)
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     cur.execute("SELECT * FROM config")
-    config_info = dict(zip([d[0] for d in cur.description], cur.fetchone() or []))
+    config_info = dict(cur.fetchone() or {})
 
     cur.execute(
         """SELECT type, count(*) as cnt,
