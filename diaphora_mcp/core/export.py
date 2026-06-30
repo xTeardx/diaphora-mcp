@@ -361,7 +361,7 @@ async def export_idb_to_diaphora(
     return dumps(result)
 
 
-def batch_export_and_diff(
+async def batch_export_and_diff(
     idb1_path: str,
     idb2_path: str,
     output_dir: str | None = None,
@@ -418,8 +418,7 @@ def batch_export_and_diff(
         result_data = None
 
         try:
-            # Step 1: export primary
-            err = run_export(idb1_path, sqlite1, use_decompiler, summaries_only)
+            err = await run_export(idb1_path, sqlite1, use_decompiler, summaries_only)
             if err:
                 batch_log.error(f"Export 1 failed: {err}")
                 result_data = {"error": f"Export of {b1} failed: {err}", "steps": step_results}
@@ -432,7 +431,7 @@ def batch_export_and_diff(
                 batch_log.info(f"Export 1 OK: {sqlite1} ({os.path.getsize(sqlite1)} bytes)")
 
                 # Step 2: export secondary
-                err = run_export(idb2_path, sqlite2, use_decompiler, summaries_only)
+                err = await run_export(idb2_path, sqlite2, use_decompiler, summaries_only)
                 if err:
                     batch_log.error(f"Export 2 failed: {err}")
                     result_data = {"error": f"Export of {b2} failed: {err}", "steps": step_results}
