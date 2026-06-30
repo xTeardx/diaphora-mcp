@@ -121,7 +121,7 @@ def run_export(idb_path: str, output_path: str, use_decompiler: bool) -> str | N
         t_out.start()
         t_err.start()
 
-        timeout_seconds = 3600
+        timeout_seconds = 14400
         idle_timeout = 120
         start_time = time.time()
         last_size = 0
