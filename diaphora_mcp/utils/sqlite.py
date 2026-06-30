@@ -15,6 +15,8 @@ def check_db(path: str) -> str | None:
         return f"File not found: {path}"
     try:
         with sqlite3.connect(path) as c:
+            # Force checkpoint so WAL data is visible in the main file
+            c.execute("PRAGMA wal_checkpoint(PASSIVE)")
             c.execute("SELECT count(*) FROM functions")
     except Exception as exc:
         return f"Not a valid Diaphora export database: {path}\n{exc}"
@@ -36,13 +38,11 @@ def check_db_for_diff(path: str) -> str | None:
     conn = sqlite3.connect(path)
     cur = conn.cursor()
     try:
-        # Functions count
         cur.execute("SELECT count(*) FROM functions")
         funcs = cur.fetchone()[0]
         if funcs == 0:
             return f"Database has 0 functions (export incomplete or empty)"
 
-        # Program table — must have callgraph primes for diff
         cur.execute("SELECT count(*) FROM program")
         prog_rows = cur.fetchone()[0]
         if prog_rows == 0:
@@ -52,14 +52,57 @@ def check_db_for_diff(path: str) -> str | None:
                 f"Found {funcs} functions but missing callgraph metadata."
             )
 
-        # Program table must have callgraph_primes filled
-        cur.execute("SELECT callgraph_primes FROM program WHERE callgraph_primes IS NOT NULL AND callgraph_primes != ''")
+        cur.execute(
+            "SELECT callgraph_primes FROM program "
+            "WHERE callgraph_primes IS NOT NULL AND callgraph_primes != ''"
+        )
         if cur.fetchone() is None:
             return f"Database export incomplete: callgraph_primes is empty in program table"
 
         return None
     finally:
         conn.close()
+
+
+def get_funcs_batch(db_path: str, addresses: list[str]) -> dict[str, dict]:
+    """Load multiple functions by address in ONE query.
+
+    Args:
+        db_path: Path to a Diaphora .sqlite database.
+        addresses: List of address strings (hex, with or without 0x prefix).
+
+    Returns:
+        {address_normalized: func_dict, ...}
+        Only addresses that exist in the database are returned.
+    """
+    if not addresses or not os.path.isfile(db_path):
+        return {}
+
+    norm = {}
+    for a in addresses:
+        key = a.strip().lower().removeprefix("0x")
+        norm[key] = a
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        placeholders = ",".join("?" for _ in norm)
+        cur.execute(
+            f"SELECT * FROM functions WHERE address IN ({placeholders})",
+            list(norm.keys()),
+        )
+        result = {}
+        for row in cur.fetchall():
+            fd = dict(row)
+            addr = fd.get("address", "")
+            if addr:
+                result[addr] = fd
+        conn.close()
+        return result
+    except Exception:
+        return {}
 
 
 def get_func(db_path: str, address: str = "", name: str = "") -> dict | None:

@@ -10,7 +10,7 @@ import json
 import os
 import sqlite3
 
-from ..utils.sqlite import get_func, get_underlying_db_paths
+from ..utils.sqlite import get_func, get_funcs_batch, get_underlying_db_paths
 from ..core.security import match_security_keywords
 
 
@@ -48,16 +48,22 @@ def summarize_patch(
     ratios = [float(r.get("ratio", 0) or 0) for r in results]
     avg_ratio = round(sum(ratios) / max(len(ratios), 1), 3)
 
-    # Security analysis
+    # Security analysis (batch-load functions)
     sec_count = 0
     sec_categories: set = set()
+
+    addrs1 = [r.get("address", "") for r in results]
+    addrs2 = [r.get("address2", "") for r in results]
+    funcs1 = get_funcs_batch(db1_path, addrs1) if db1_path else {}
+    funcs2 = get_funcs_batch(db2_path, addrs2) if db2_path else {}
+
     for r in results:
         addr1 = r.get("address", "")
         addr2 = r.get("address2", "")
         name1 = r.get("name", "")
         name2 = r.get("name2", "")
-        f1 = get_func(db1_path, address=addr1) if db1_path and addr1 else None
-        f2 = get_func(db2_path, address=addr2) if db2_path and addr2 else None
+        f1 = funcs1.get(addr1) if addr1 else None
+        f2 = funcs2.get(addr2) if addr2 else None
         pseudo1 = (f1.get("pseudocode", "") or "") if f1 else ""
         pseudo2 = (f2.get("pseudocode", "") or "") if f2 else ""
         so = match_security_keywords(name1, pseudo1, "")

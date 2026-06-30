@@ -7,10 +7,8 @@ Uses the built-in Diaphora environment-variable mechanism (DIAPHORA_AUTO,
 DIAPHORA_EXPORT_FILE, DIAPHORA_USE_DECOMPILER) to trigger export without any
 GUI interaction.
 
-Why a wrapper instead of pointing -S directly at diaphora_ida.py?
-  The Diaphora installation path contains spaces ("IDA Professional 9.3/…"),
-  which some IDA versions handle poorly on the -S argument.  This file lives
-  in the project directory (no spaces) and simply delegates to main().
+After export completes, forces IDA to exit via idaapi.qexit() — otherwise
+idat.exe hangs indefinitely after the script finishes (see Problems.md #11).
 """
 
 import os
@@ -21,7 +19,17 @@ DIAPHORA_DIR = r"D:\Programs\IDA Professional 9.3\plugins\diaphora-3.4.1"
 sys.path.insert(0, DIAPHORA_DIR)
 os.chdir(DIAPHORA_DIR)
 
-# -- Delegate to Diaphora's built-in headless entry point ---------------------
+# -- Run export, then force-exit IDA -----------------------------------------
 import diaphora_ida  # noqa: E402
 
-diaphora_ida.main()
+try:
+    diaphora_ida.main()
+except Exception:
+    pass  # Export may have partially failed; still need to exit
+finally:
+    try:
+        import idaapi
+        idaapi.qexit(0)  # Force IDA to shut down cleanly
+    except ImportError:
+        pass  # Not running inside IDA (should not happen in normal use)
+    sys.exit(0)

@@ -9,7 +9,7 @@ import json
 import os
 import sqlite3
 
-from ..utils.sqlite import get_func, get_underlying_db_paths
+from ..utils.sqlite import get_func, get_funcs_batch, get_underlying_db_paths
 from ..utils.format import pseudocode_simple_diff
 from ..core.security import match_security_keywords
 
@@ -67,6 +67,13 @@ def rank_changes(
     conn.close()
 
     ranked = []
+
+    # Batch-load all functions in one query per database
+    addrs1 = [r.get("address", "") for r in all_rows]
+    addrs2 = [r.get("address2", "") for r in all_rows]
+    funcs1 = get_funcs_batch(db1_path, addrs1) if db1_path else {}
+    funcs2 = get_funcs_batch(db2_path, addrs2) if db2_path else {}
+
     for row in all_rows:
         addr1 = row.get("address", "")
         addr2 = row.get("address2", "")
@@ -75,17 +82,15 @@ def rank_changes(
 
         pseudo1 = pseudo2 = ""
         complexity_chg = 0
-        if db1_path and addr1:
-            f1 = get_func(db1_path, address=addr1)
-            if f1:
-                pseudo1 = f1.get("pseudocode", "") or ""
-        if db2_path and addr2:
-            f2 = get_func(db2_path, address=addr2)
-            if f2:
-                pseudo2 = f2.get("pseudocode", "") or ""
-                complexity = f2.get("cyclomatic_complexity", 0) or 0
-                complexity1 = f1.get("cyclomatic_complexity", 0) if f1 else 0
-                complexity_chg = abs(complexity - complexity1)
+        f1 = funcs1.get(addr1) if addr1 else None
+        f2 = funcs2.get(addr2) if addr2 else None
+        if f1:
+            pseudo1 = f1.get("pseudocode", "") or ""
+        if f2:
+            pseudo2 = f2.get("pseudocode", "") or ""
+            complexity = f2.get("cyclomatic_complexity", 0) or 0
+            complexity1 = f1.get("cyclomatic_complexity", 0) if f1 else 0
+            complexity_chg = abs(complexity - complexity1)
 
         sec_old = match_security_keywords(name1, pseudo1, "")
         sec_new = match_security_keywords(name2, pseudo2, "")

@@ -139,15 +139,18 @@ def get_export_info(db_path: str) -> str:
         return json.dumps({"error": err})
 
     conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     cur.execute("SELECT count(*) FROM functions")
     func_count = cur.fetchone()[0]
 
     cur.execute("SELECT * FROM program")
-    program = [dict(zip([d[0] for d in cur.description], r)) for r in cur.fetchall()]
+    program = [dict(r) for r in cur.fetchall()]
 
-    cur.execute("SELECT count(*) FROM instructions")
+    # SUM(instructions) is much faster than SELECT count(*) FROM instructions
+    # on large databases (instructions can have 10M+ rows)
+    cur.execute("SELECT COALESCE(SUM(instructions), 0) FROM functions")
     insn_count = cur.fetchone()[0]
 
     conn.close()
