@@ -20,7 +20,12 @@ from ..utils.log import ExportLogger, OperationLogger
 # ---------------------------------------------------------------------------
 # Headless export
 # ---------------------------------------------------------------------------
-def run_export(idb_path: str, output_path: str, use_decompiler: bool) -> str | None:
+def run_export(
+    idb_path: str,
+    output_path: str,
+    use_decompiler: bool,
+    summaries_only: bool | None = None,
+) -> str | None:
     """Run IDA headless export via idat.exe and the headless wrapper.
 
     Writes a detailed log to logs/export_<timestamp>.log so the user
@@ -35,11 +40,19 @@ def run_export(idb_path: str, output_path: str, use_decompiler: bool) -> str | N
     if not os.path.isfile(HEADLESS_WRAPPER):
         return f"Headless wrapper not found at {HEADLESS_WRAPPER}"
 
+    if summaries_only is None:
+        try:
+            idb_size = os.path.getsize(idb_path)
+            # If IDB/i64 size is > 100 MB, enable summaries_only to avoid long export
+            summaries_only = idb_size > 100 * 1024 * 1024
+        except Exception:
+            summaries_only = False
+
     # 1. Try exporting via active GUI IDA Pro session first
     try:
         client = xmlrpc.client.ServerProxy("http://127.0.0.1:28652")
         if client.ping():
-            res = client.export_current_db(output_path, use_decompiler)
+            res = client.export_current_db(output_path, use_decompiler, summaries_only)
             if res is True:
                 if check_db(output_path) is None:
                     return None
@@ -47,7 +60,7 @@ def run_export(idb_path: str, output_path: str, use_decompiler: bool) -> str | N
                     return f"GUI export finished but database at {output_path} is invalid."
             else:
                 return f"GUI export failed: {res}"
-    except (ConnectionRefusedError, OSError, xmlrpc.client.Fault):
+    except (ConnectionRefusedError, OSError, xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
         # GUI server is not listening or ping failed, fall back to headless idat.exe
         pass
 
@@ -83,11 +96,17 @@ def run_export(idb_path: str, output_path: str, use_decompiler: bool) -> str | N
         else:
             env.pop("DIAPHORA_USE_DECOMPILER", None)
 
+        if summaries_only:
+            env["DIAPHORA_FUNCTION_SUMMARIES_ONLY"] = "1"
+        else:
+            env.pop("DIAPHORA_FUNCTION_SUMMARIES_ONLY", None)
+
         wal_path = output_path + "-wal"
         log.info(f"Launching: {IDAT_PATH} -A -S{HEADLESS_WRAPPER} {os.path.basename(idb_path)}")
         log.info(f"cwd: {DIAPHORA_DIR}")
         log.info(f"DIAPHORA_EXPORT_FILE={output_path}")
         log.info(f"DIAPHORA_USE_DECOMPILER={'1' if use_decompiler else 'None (False)'}")
+        log.info(f"DIAPHORA_FUNCTION_SUMMARIES_ONLY={'1' if summaries_only else 'None (False)'}")
 
         try:
             proc = subprocess.Popen(
@@ -248,12 +267,13 @@ def export_idb_to_diaphora(
     idb_path: str,
     output_path: str | None = None,
     use_decompiler: bool = False,
+    summaries_only: bool | None = None,
 ) -> str:
     """Export an IDB/i64 database to Diaphora SQLite format using IDA headless.
 
     NOTE: Enabling `use_decompiler=True` will include Hex-Rays pseudocode in
     the export, but this SIGNIFICANTLY increases export time — expect 5–30+
-    minutes for large binaries.  Default is False for fast export; re-export
+    minutes for large binaries. Default is False for fast export; re-export
     with decompiler only if pseudocode analysis is needed.
     """
     if not os.path.isfile(idb_path):
@@ -272,7 +292,7 @@ def export_idb_to_diaphora(
         base = os.path.splitext(os.path.basename(idb_path))[0]
         output_path = os.path.join(os.path.dirname(idb_path), f"{base}.sqlite")
 
-    err = run_export(idb_path, output_path, use_decompiler)
+    err = run_export(idb_path, output_path, use_decompiler, summaries_only)
     if err:
         result = {"error": err}
         if log_warn:

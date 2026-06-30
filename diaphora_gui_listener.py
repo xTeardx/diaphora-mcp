@@ -25,10 +25,10 @@ class DiaphoraGuiAPI:
         print("[Diaphora MCP] Received ping request")
         return True
 
-    def export_current_db(self, output_path: str, use_decompiler: bool) -> bool | str:
+    def export_current_db(self, output_path: str, use_decompiler: bool, summaries_only: bool = False) -> bool | str:
         """Triggers export of the active database in the main IDA GUI thread."""
         print(
-            f"[Diaphora MCP] Export request received: out={output_path}, decomp={use_decompiler}"
+            f"[Diaphora MCP] Export request received: out={output_path}, decomp={use_decompiler}, summaries={summaries_only}"
         )
 
         def do_export() -> bool | str:
@@ -39,6 +39,11 @@ class DiaphoraGuiAPI:
                 os.environ["DIAPHORA_USE_DECOMPILER"] = "1"
             else:
                 os.environ.pop("DIAPHORA_USE_DECOMPILER", None)
+
+            if summaries_only:
+                os.environ["DIAPHORA_FUNCTION_SUMMARIES_ONLY"] = "1"
+            else:
+                os.environ.pop("DIAPHORA_FUNCTION_SUMMARIES_ONLY", None)
 
             try:
                 import sys
@@ -68,6 +73,7 @@ class DiaphoraGuiAPI:
                     "DIAPHORA_AUTO",
                     "DIAPHORA_EXPORT_FILE",
                     "DIAPHORA_USE_DECOMPILER",
+                    "DIAPHORA_FUNCTION_SUMMARIES_ONLY",
                 ]:
                     os.environ.pop(var, None)
 
