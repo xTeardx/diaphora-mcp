@@ -35,9 +35,10 @@ class DiaphoraGuiAPI:
             # Set environment variables that Diaphora checks for auto-export
             os.environ["DIAPHORA_AUTO"] = "1"
             os.environ["DIAPHORA_EXPORT_FILE"] = output_path
-            os.environ["DIAPHORA_USE_DECOMPILER"] = (
-                "1" if use_decompiler else "0"
-            )
+            if use_decompiler:
+                os.environ["DIAPHORA_USE_DECOMPILER"] = "1"
+            else:
+                os.environ.pop("DIAPHORA_USE_DECOMPILER", None)
 
             try:
                 import sys

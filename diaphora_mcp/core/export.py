@@ -78,13 +78,16 @@ def run_export(idb_path: str, output_path: str, use_decompiler: bool) -> str | N
         env = os.environ.copy()
         env["DIAPHORA_AUTO"] = "1"
         env["DIAPHORA_EXPORT_FILE"] = output_path
-        env["DIAPHORA_USE_DECOMPILER"] = "1" if use_decompiler else "0"
+        if use_decompiler:
+            env["DIAPHORA_USE_DECOMPILER"] = "1"
+        else:
+            env.pop("DIAPHORA_USE_DECOMPILER", None)
 
         wal_path = output_path + "-wal"
         log.info(f"Launching: {IDAT_PATH} -A -S{HEADLESS_WRAPPER} {os.path.basename(idb_path)}")
         log.info(f"cwd: {DIAPHORA_DIR}")
         log.info(f"DIAPHORA_EXPORT_FILE={output_path}")
-        log.info(f"DIAPHORA_USE_DECOMPILER={'1' if use_decompiler else '0'}")
+        log.info(f"DIAPHORA_USE_DECOMPILER={'1' if use_decompiler else 'None (False)'}")
 
         try:
             proc = subprocess.Popen(
