@@ -41,11 +41,14 @@ mcp = FastMCP("Diaphora")
 # Tools — Export
 # ---------------------------------------------------------------------------
 mcp.tool(
-    description="Export an IDB/i64 database to Diaphora SQLite format using IDA headless (idat.exe). Requires a previously analyzed .i64/.idb file."
+    description="Export an IDB/i64 database to Diaphora SQLite using idat.exe headless. "
+    "use_decompiler=True adds pseudocode but makes export 10-30x slower. "
+    "Default is False for a quick first pass."
 )(_export_idb_to_diaphora)
 
 mcp.tool(
-    description="Complete pipeline: export two IDB databases, diff them, and return a summary. One-shot for the full workflow."
+    description="Complete pipeline: export two IDB databases, diff them, and return a summary. "
+    "use_decompiler=True adds pseudocode but makes export significantly slower."
 )(_batch_export_and_diff)
 
 # ---------------------------------------------------------------------------

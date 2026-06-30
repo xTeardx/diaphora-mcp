@@ -166,11 +166,26 @@ def _clean_stale_locks(idb_path: str, log: ExportLogger):
 def export_idb_to_diaphora(
     idb_path: str,
     output_path: str | None = None,
-    use_decompiler: bool = True,
+    use_decompiler: bool = False,
 ) -> str:
-    """Export an IDB/i64 database to Diaphora SQLite format using IDA headless."""
+    """Export an IDB/i64 database to Diaphora SQLite format using IDA headless.
+
+    NOTE: Enabling `use_decompiler=True` will include Hex-Rays pseudocode in
+    the export, but this SIGNIFICANTLY increases export time — expect 5–30+
+    minutes for large binaries.  Default is False for fast export; re-export
+    with decompiler only if pseudocode analysis is needed.
+    """
     if not os.path.isfile(idb_path):
         return json.dumps({"error": f"IDB file not found: {idb_path}"})
+
+    if use_decompiler:
+        log_warn = (
+            "WARNING: Decompiler enabled — export will be significantly slower "
+            "(5–30+ min for large binaries). Consider setting use_decompiler=False "
+            "for a fast first pass (~1-2 min)."
+        )
+    else:
+        log_warn = None
 
     if not output_path:
         base = os.path.splitext(os.path.basename(idb_path))[0]
@@ -178,34 +193,47 @@ def export_idb_to_diaphora(
 
     err = run_export(idb_path, output_path, use_decompiler)
     if err:
-        return json.dumps({"error": err})
+        result = {"error": err}
+        if log_warn:
+            result["warning"] = log_warn
+        return json.dumps(result)
 
-    return json.dumps(
-        {
-            "success": True,
-            "output_path": output_path,
-            "size_bytes": os.path.getsize(output_path),
-            "exported_from": os.path.basename(idb_path),
-        },
-        indent=2,
-        default=str,
-    )
+    result = {
+        "success": True,
+        "output_path": output_path,
+        "size_bytes": os.path.getsize(output_path),
+        "exported_from": os.path.basename(idb_path),
+        "decompiler_used": use_decompiler,
+    }
+    if log_warn:
+        result["warning"] = log_warn
+    return json.dumps(result, indent=2, default=str)
 
 
 def batch_export_and_diff(
     idb1_path: str,
     idb2_path: str,
     output_dir: str | None = None,
-    use_decompiler: bool = True,
+    use_decompiler: bool = False,
 ) -> str:
-    """Run the full Diaphora pipeline: export → export → diff → summary."""
+    """Run the full Diaphora pipeline: export → export → diff → summary.
+
+    NOTE: Enabling `use_decompiler=True` will include Hex-Rays pseudocode,
+    but this SIGNIFICANTLY increases export time for large binaries.
+    Default is False for a fast pipeline run.
+    """
     for p, label in [(idb1_path, "idb1"), (idb2_path, "idb2")]:
         if not os.path.isfile(p):
             return json.dumps({"error": f"{label} not found: {p}"})
 
-    if not output_dir:
-        output_dir = os.path.dirname(os.path.abspath(idb1_path))
-    os.makedirs(output_dir, exist_ok=True)
+    if use_decompiler:
+        log_warn = (
+            "WARNING: Decompiler enabled — both exports will be significantly slower "
+            "(potentially 10–60+ min total for large binaries). Consider setting "
+            "use_decompiler=False for a fast first pass."
+        )
+    else:
+        log_warn = None
 
     b1 = os.path.splitext(os.path.basename(idb1_path))[0]
     b2 = os.path.splitext(os.path.basename(idb2_path))[0]
