@@ -14,6 +14,8 @@ idat.exe hangs indefinitely after the script finishes (see Problems.md #11).
 import os
 import sys
 
+sys.setrecursionlimit(100000)
+
 # -- Tell Diaphora where to find its sibling modules --------------------------
 DIAPHORA_DIR = r"D:\Programs\IDA Professional 9.3\plugins\diaphora-3.4.1"
 sys.path.insert(0, DIAPHORA_DIR)

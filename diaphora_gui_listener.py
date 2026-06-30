@@ -40,6 +40,9 @@ class DiaphoraGuiAPI:
             )
 
             try:
+                import sys
+                sys.setrecursionlimit(100000)
+
                 import diaphora_ida
 
                 # Reload module if already imported to ensure clean state
