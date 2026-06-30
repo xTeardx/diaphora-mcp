@@ -4,6 +4,7 @@ Diaphora MCP — function-level analysis.
 Search, compare, and explain individual functions across databases.
 """
 
+import json
 import os
 import sqlite3
 
