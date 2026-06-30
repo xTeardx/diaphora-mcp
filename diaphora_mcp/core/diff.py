@@ -116,6 +116,8 @@ def diff_diaphora_dbs(
                 cwd=DIAPHORA_DIR,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 text=True,
             )
 

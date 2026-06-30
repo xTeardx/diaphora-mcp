@@ -5,6 +5,7 @@ Handles headless IDA export via idat.exe + Diaphora env-var mechanism,
 and the full export→export→diff→summary pipeline.
 """
 
+import asyncio
 import json
 import os
 import subprocess
@@ -21,7 +22,7 @@ from ..utils.format import dumps, err_json
 # ---------------------------------------------------------------------------
 # Headless export
 # ---------------------------------------------------------------------------
-def run_export(
+async def run_export(
     idb_path: str,
     output_path: str,
     use_decompiler: bool,
@@ -127,6 +128,8 @@ def run_export(
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 text=True,
             )
         except FileNotFoundError:
@@ -190,8 +193,14 @@ def run_export(
                             proc.kill()
                             break
 
-                time.sleep(5)
+                await asyncio.sleep(5)
         finally:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                    log.info("Headless export subprocess killed due to cancellation or error.")
+                except Exception:
+                    pass
             t_out.join(timeout=2)
             t_err.join(timeout=2)
             stdout = "".join(stdout_chunks)
@@ -245,7 +254,8 @@ def run_export(
         # Post-check: program table must be filled for diff to work
         try:
             import sqlite3
-            with sqlite3.connect(output_path) as _pc:
+            _pc = sqlite3.connect(output_path)
+            try:
                 _pcur = _pc.cursor()
                 _pcur.execute("SELECT count(*) FROM program")
                 if _pcur.fetchone()[0] == 0:
@@ -254,6 +264,8 @@ def run_export(
                         "Callgraph metadata not written — diff will fail on this database. "
                         "This happens when IDA crashes during finalization (see Problems.md #3)."
                     )
+            finally:
+                _pc.close()
         except Exception:
             pass
 
@@ -280,7 +292,7 @@ def _clean_stale_locks(idb_path: str, log: ExportLogger):
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
-def export_idb_to_diaphora(
+async def export_idb_to_diaphora(
     idb_path: str,
     output_path: str | None = None,
     use_decompiler: bool = False,
@@ -309,7 +321,7 @@ def export_idb_to_diaphora(
         base = os.path.splitext(os.path.basename(idb_path))[0]
         output_path = os.path.join(os.path.dirname(idb_path), f"{base}.sqlite")
 
-    err = run_export(idb_path, output_path, use_decompiler, summaries_only)
+    err = await run_export(idb_path, output_path, use_decompiler, summaries_only)
     if err:
         result = {"error": err}
         if log_warn:
@@ -329,7 +341,8 @@ def export_idb_to_diaphora(
     # Check if program table was filled (required for diff)
     try:
         import sqlite3
-        with sqlite3.connect(output_path) as _c:
+        _c = sqlite3.connect(output_path)
+        try:
             _r = _c.execute("SELECT count(*) FROM program").fetchone()[0]
             if _r == 0:
                 prog_warn = (
@@ -340,6 +353,8 @@ def export_idb_to_diaphora(
                     result["warning"] += " " + prog_warn
                 else:
                     result["warning"] = prog_warn
+        finally:
+            _c.close()
     except Exception:
         pass
 
@@ -436,6 +451,8 @@ def batch_export_and_diff(
                             [PYTHON, DIAPHORA_SCRIPT, sqlite1, sqlite2, "-o", diff_out],
                             cwd=DIAPHORA_DIR,
                             capture_output=True,
+                            stdin=subprocess.DEVNULL,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                             text=True,
                             timeout=3600,
                         )
