@@ -1,3 +1,5 @@
+[Читать на русском](sqlite3_example.ru.md)
+
 # Example: Diffing sqlite3.dll (Python vs AIMP)
 
 This example demonstrates how to use the Diaphora MCP server to perform binary comparison (diffing) on two small, real-world native Windows DLLs that already exist on your system.
