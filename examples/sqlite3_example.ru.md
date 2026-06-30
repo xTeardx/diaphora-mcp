@@ -16,7 +16,8 @@
 2. Скопируйте туда оба DLL-файла, переименовав их для ясности:
    - Копию из Python назовите `sqlite3_python.dll`
    - Копию из AIMP назовите `sqlite3_aimp.dll`
-3. Сгенерируйте файлы баз данных IDA Pro (`.i64`), запустив IDA в пакетном (batch) режиме через командную строку:
+3. Откройте обе DLL в IDA Pro, чтобы IDA выполнила автоанализ и сохранила базы данных (`sqlite3_python.dll.i64` и `sqlite3_aimp.dll.i64`).
+   *Примечание: Так как у вас настроен `ida-pro-mcp`, вы можете просто открыть их в ваших активных GUI-сессиях IDA Pro. В качестве альтернативы можно сгенерировать их в фоновом режиме через командную строку:*
    ```cmd
    "C:\Program Files\IDA Pro 9.3\idat.exe" -B "E:\Program Files\IdaPro_projects\test\sqlite3_python.dll"
    "C:\Program Files\IDA Pro 9.3\idat.exe" -B "E:\Program Files\IdaPro_projects\test\sqlite3_aimp.dll"

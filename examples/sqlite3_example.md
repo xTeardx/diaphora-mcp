@@ -16,7 +16,8 @@ We will compare two different compiled versions of `sqlite3.dll`:
 2. Copy both DLL files to this folder, renaming them for clarity:
    - Copy Python's DLL as `sqlite3_python.dll`
    - Copy AIMP's DLL as `sqlite3_aimp.dll`
-3. Generate the IDA Pro database files (`.i64`) by running IDA in batch mode:
+3. Open both DLLs in IDA Pro to let IDA perform auto-analysis and save the databases (`sqlite3_python.dll.i64` and `sqlite3_aimp.dll.i64`). 
+   *Note: Since you have `ida-pro-mcp` configured, you can simply open them in your active IDA Pro GUI sessions. Alternatively, you can generate them headless via command line:*
    ```cmd
    "C:\Program Files\IDA Pro 9.3\idat.exe" -B "E:\Program Files\IdaPro_projects\test\sqlite3_python.dll"
    "C:\Program Files\IDA Pro 9.3\idat.exe" -B "E:\Program Files\IdaPro_projects\test\sqlite3_aimp.dll"
