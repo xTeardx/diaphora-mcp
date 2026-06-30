@@ -98,28 +98,38 @@ def diff_diaphora_dbs(
 
     try:
         start = time.time()
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [PYTHON, DIAPHORA_SCRIPT, db1_path, db2_path, "-o", output_path],
             cwd=DIAPHORA_DIR,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=600,
         )
+
+        # Stream stdout to log in real time
+        stdout_lines = []
+        for line in proc.stdout:
+            clean = line.rstrip("\n\r")
+            stdout_lines.append(clean)
+            # Log each Diaphora INFO line immediately
+            if clean.startswith("[Diaphora:"):
+                log.info(f"  diaphora> {clean.split('] ', 1)[-1]}")
+        stdout = "\n".join(stdout_lines)
+        stderr = proc.stderr.read() if proc.stderr else ""
+
+        # Wait with timeout
+        try:
+            proc.wait(timeout=3600)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            log.error("Diaphora diff timed out after 3600 s")
+            log.__exit__(None, None, None)
+            return json.dumps({"error": "Diaphora diff timed out after 3600 s"})
+
         elapsed = time.time() - start
         log.info(f"diaphora.py exit code: {proc.returncode} ({elapsed:.0f}s)")
-        log.log_subprocess_output(proc.stdout or "", proc.stderr or "")
-    except subprocess.TimeoutExpired:
-        log.error("Diaphora diff timed out after 600 s")
-        log.__exit__(None, None, None)
-        return json.dumps({"error": "Diaphora diff timed out after 600 s"})
-    except FileNotFoundError:
-        log.error(f"diaphora.py not found at {DIAPHORA_SCRIPT}")
-        log.__exit__(None, None, None)
-        return json.dumps({"error": f"diaphora.py not found at {DIAPHORA_SCRIPT}"})
-    except Exception as exc:
-        log.error(f"Failed to launch Diaphora: {exc}")
-        log.__exit__(None, None, None)
-        return json.dumps({"error": f"Failed to launch Diaphora: {exc}"})
+        if not proc.returncode == 0:
+            log.log_subprocess_output("", stderr)
 
     if not os.path.isfile(output_path):
         log.error("No output file produced")
