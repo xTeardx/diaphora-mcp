@@ -3,6 +3,24 @@ Diaphora MCP — formatting and feature-extraction utilities.
 """
 
 import difflib
+import json
+from typing import Any
+
+
+def dumps(data: Any, *, indent: int = 2, default: Any = None) -> str:
+    """Serialize to JSON with project-wide defaults (indent=2, str for non-serializable)."""
+    if default is None:
+        default = str
+    return json.dumps(data, indent=indent, default=default)
+
+
+def err_json(msg: str, extra: dict[str, Any] | None = None) -> str:
+    """Shortcut for ``{"error": msg}`` with optional extra fields."""
+    d: dict[str, Any] = {"error": msg}
+    if extra:
+        d.update(extra)
+    return dumps(d)
+
 
 
 def pseudocode_simple_diff(pseudo1: str, pseudo2: str) -> list:

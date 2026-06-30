@@ -15,6 +15,7 @@ import xmlrpc.client
 from ..config import IDAT_PATH, DIAPHORA_DIR, HEADLESS_WRAPPER, DIAPHORA_SCRIPT, PYTHON
 from ..utils.sqlite import check_db, check_db_for_diff, force_delete_file
 from ..utils.log import ExportLogger, OperationLogger
+from ..utils.format import dumps, err_json
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +53,17 @@ def run_export(
     try:
         client = xmlrpc.client.ServerProxy("http://127.0.0.1:28652")
         if client.ping():
-            res = client.export_current_db(output_path, use_decompiler, summaries_only)
+            # Check API version for backward compat with older listeners
+            api_version = 1
+            try:
+                api_version = client.version()
+            except Exception:
+                api_version = 1
+
+            if api_version >= 2:
+                res = client.export_current_db(output_path, use_decompiler, summaries_only)
+            else:
+                res = client.export_current_db(output_path, use_decompiler)
             if res is True:
                 if check_db(output_path) is None:
                     return None
@@ -132,8 +143,8 @@ def run_export(
             try:
                 for line in pipe:
                     chunks.append(line)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warn(f"Pipe reader thread error: {e}")
 
         t_out = threading.Thread(target=read_pipe, args=(proc.stdout, stdout_chunks), daemon=True)
         t_err = threading.Thread(target=read_pipe, args=(proc.stderr, stderr_chunks), daemon=True)
@@ -155,9 +166,15 @@ def run_export(
 
                 current_size = 0
                 if os.path.isfile(output_path):
-                    current_size += os.path.getsize(output_path)
+                    try:
+                        current_size += os.path.getsize(output_path)
+                    except OSError:
+                        pass  # file may have been deleted since isfile check
                 if os.path.isfile(wal_path):
-                    current_size += os.path.getsize(wal_path)
+                    try:
+                        current_size += os.path.getsize(wal_path)
+                    except OSError:
+                        pass
 
                 if current_size != last_size:
                     if last_size != 0:
@@ -227,16 +244,15 @@ def run_export(
         # Post-check: program table must be filled for diff to work
         try:
             import sqlite3
-            _pc = sqlite3.connect(output_path)
-            _pcur = _pc.cursor()
-            _pcur.execute("SELECT count(*) FROM program")
-            if _pcur.fetchone()[0] == 0:
-                log.warn(
-                    "Export incomplete: program table is empty. "
-                    "Callgraph metadata not written — diff will fail on this database. "
-                    "This happens when IDA crashes during finalization (see Problems.md #3)."
-                )
-            _pc.close()
+            with sqlite3.connect(output_path) as _pc:
+                _pcur = _pc.cursor()
+                _pcur.execute("SELECT count(*) FROM program")
+                if _pcur.fetchone()[0] == 0:
+                    log.warn(
+                        "Export incomplete: program table is empty. "
+                        "Callgraph metadata not written — diff will fail on this database. "
+                        "This happens when IDA crashes during finalization (see Problems.md #3)."
+                    )
         except Exception:
             pass
 
@@ -277,7 +293,7 @@ def export_idb_to_diaphora(
     with decompiler only if pseudocode analysis is needed.
     """
     if not os.path.isfile(idb_path):
-        return json.dumps({"error": f"IDB file not found: {idb_path}"})
+        return err_json(f"IDB file not found: {idb_path}")
 
     if use_decompiler:
         log_warn = (
@@ -297,7 +313,7 @@ def export_idb_to_diaphora(
         result = {"error": err}
         if log_warn:
             result["warning"] = log_warn
-        return json.dumps(result)
+        return dumps(result)
 
     result = {
         "success": True,
@@ -312,22 +328,21 @@ def export_idb_to_diaphora(
     # Check if program table was filled (required for diff)
     try:
         import sqlite3
-        _c = sqlite3.connect(output_path)
-        _r = _c.execute("SELECT count(*) FROM program").fetchone()[0]
-        if _r == 0:
-            prog_warn = (
-                "Export incomplete: program table is empty. "
-                "Diff will fail — see Problems.md #3."
-            )
-            if "warning" in result:
-                result["warning"] += " " + prog_warn
-            else:
-                result["warning"] = prog_warn
-        _c.close()
+        with sqlite3.connect(output_path) as _c:
+            _r = _c.execute("SELECT count(*) FROM program").fetchone()[0]
+            if _r == 0:
+                prog_warn = (
+                    "Export incomplete: program table is empty. "
+                    "Diff will fail — see Problems.md #3."
+                )
+                if "warning" in result:
+                    result["warning"] += " " + prog_warn
+                else:
+                    result["warning"] = prog_warn
     except Exception:
         pass
 
-    return json.dumps(result, indent=2, default=str)
+    return dumps(result)
 
 
 def batch_export_and_diff(
@@ -335,6 +350,7 @@ def batch_export_and_diff(
     idb2_path: str,
     output_dir: str | None = None,
     use_decompiler: bool = False,
+    summaries_only: bool | None = None,
     cleanup: bool = True,
     limit: int = 500,
     unmatched_limit: int = 100,
@@ -344,6 +360,10 @@ def batch_export_and_diff(
     NOTE: Enabling `use_decompiler=True` will include Hex-Rays pseudocode,
     but this SIGNIFICANTLY increases export time for large binaries.
     Default is False for a fast pipeline run.
+
+    When `summaries_only=True`, exports skip detailed assembly/pseudocode and
+    only store function summaries — much faster for large binaries.
+    When `None` (default), auto-detects based on .i64/.idb file size (>100 MB).
     """
     b1 = os.path.splitext(os.path.basename(idb1_path))[0]
     b2 = os.path.splitext(os.path.basename(idb2_path))[0]
@@ -356,136 +376,131 @@ def batch_export_and_diff(
     sqlite2 = os.path.join(output_dir, f"{b2}.sqlite")
     diff_out = os.path.join(output_dir, f"{b1}_vs_{b2}.diaphora")
 
-    # Batch-level log
-    batch_log = OperationLogger(
-        f"Batch pipeline: {b1} + {b2}",
-        tag="batch"
-    )
-    batch_log.__enter__()
-
+    # Validate input files before setting up logger
     for p, label in [(idb1_path, "idb1"), (idb2_path, "idb2")]:
         if not os.path.isfile(p):
-            batch_log.__exit__(None, None, None)
-            return json.dumps({"error": f"{label} not found: {p}"})
+            return err_json(f"{label} not found: {p}")
 
-    if use_decompiler:
-        log_warn = (
-            "WARNING: Decompiler enabled — both exports will be significantly slower "
-            "(potentially 10–60+ min total for large binaries). Consider setting "
-            "use_decompiler=False for a fast first pass."
-        )
-    else:
-        log_warn = None
-
-    batch_log.info(f"idb1: {idb1_path}")
-    batch_log.info(f"idb2: {idb2_path}")
-    batch_log.info(f"use_decompiler: {use_decompiler}")
-    batch_log.info(f"sqlite1: {sqlite1}")
-    batch_log.info(f"sqlite2: {sqlite2}")
-    batch_log.info(f"diff_out: {diff_out}")
-
-    step_results = {}
-
-    try:
-        # Step 1: export primary
-        err = run_export(idb1_path, sqlite1, use_decompiler)
-        if err:
-            batch_log.error(f"Export 1 failed: {err}")
-            return json.dumps({"error": f"Export of {b1} failed: {err}", "steps": step_results})
-        step_results["export1"] = {
-            "database": b1,
-            "output": sqlite1,
-            "size_bytes": os.path.getsize(sqlite1),
-        }
-        batch_log.info(f"Export 1 OK: {sqlite1} ({os.path.getsize(sqlite1)} bytes)")
-
-        # Step 2: export secondary
-        err = run_export(idb2_path, sqlite2, use_decompiler)
-        if err:
-            batch_log.error(f"Export 2 failed: {err}")
-            return json.dumps({"error": f"Export of {b2} failed: {err}", "steps": step_results})
-        step_results["export2"] = {
-            "database": b2,
-            "output": sqlite2,
-            "size_bytes": os.path.getsize(sqlite2),
-        }
-        batch_log.info(f"Export 2 OK: {sqlite2} ({os.path.getsize(sqlite2)} bytes)")
-
-        # Step 3: diff
-        batch_log.info("Starting diff...")
-        try:
-            proc = subprocess.run(
-                [PYTHON, DIAPHORA_SCRIPT, sqlite1, sqlite2, "-o", diff_out],
-                cwd=DIAPHORA_DIR,
-                capture_output=True,
-                text=True,
-                timeout=600,
+    desc = f"Batch pipeline: {b1} + {b2}"
+    with OperationLogger(desc, tag="batch") as batch_log:
+        if use_decompiler:
+            batch_log.info(
+                "WARNING: Decompiler enabled — both exports will be significantly slower "
+                "(potentially 10–60+ min total for large binaries). Consider setting "
+                "use_decompiler=False for a fast first pass."
             )
-        except subprocess.TimeoutExpired:
-            batch_log.error("Diff timed out after 600 s")
-            return json.dumps({"error": "Diff timed out after 600 s", "steps": step_results})
-        except Exception as exc:
-            batch_log.error(f"Diff failed: {exc}")
-            return json.dumps({"error": f"Diff failed: {exc}", "steps": step_results})
 
-        batch_log.info(f"Diff exit code: {proc.returncode}")
-        batch_log.log_subprocess_output(proc.stdout or "", proc.stderr or "")
+        batch_log.info(f"idb1: {idb1_path}")
+        batch_log.info(f"idb2: {idb2_path}")
+        batch_log.info(f"use_decompiler: {use_decompiler}")
+        batch_log.info(f"summaries_only: {summaries_only}")
+        batch_log.info(f"sqlite1: {sqlite1}")
+        batch_log.info(f"sqlite2: {sqlite2}")
+        batch_log.info(f"diff_out: {diff_out}")
 
-        if not os.path.isfile(diff_out):
-            batch_log.error("Diff produced no output file")
-            return json.dumps(
-                {
-                    "error": "Diff completed but no output file produced",
-                    "steps": step_results,
-                    "stdout": (proc.stdout or "")[-3000:],
-                    "stderr": (proc.stderr or "")[-3000:],
+        step_results = {}
+        result_data = None
+
+        try:
+            # Step 1: export primary
+            err = run_export(idb1_path, sqlite1, use_decompiler, summaries_only)
+            if err:
+                batch_log.error(f"Export 1 failed: {err}")
+                result_data = {"error": f"Export of {b1} failed: {err}", "steps": step_results}
+            else:
+                step_results["export1"] = {
+                    "database": b1,
+                    "output": sqlite1,
+                    "size_bytes": os.path.getsize(sqlite1),
                 }
-            )
+                batch_log.info(f"Export 1 OK: {sqlite1} ({os.path.getsize(sqlite1)} bytes)")
 
-        diff_size = os.path.getsize(diff_out)
-        step_results["diff"] = {
-            "output": diff_out,
-            "size_bytes": diff_size,
-        }
-        batch_log.info(f"Diff output: {diff_out} ({diff_size} bytes)")
+                # Step 2: export secondary
+                err = run_export(idb2_path, sqlite2, use_decompiler, summaries_only)
+                if err:
+                    batch_log.error(f"Export 2 failed: {err}")
+                    result_data = {"error": f"Export of {b2} failed: {err}", "steps": step_results}
+                else:
+                    step_results["export2"] = {
+                        "database": b2,
+                        "output": sqlite2,
+                        "size_bytes": os.path.getsize(sqlite2),
+                    }
+                    batch_log.info(f"Export 2 OK: {sqlite2} ({os.path.getsize(sqlite2)} bytes)")
 
-        # Step 4: read and return results
-        from .diff import read_results as _read_results
+                    # Step 3: diff
+                    batch_log.info("Starting diff...")
+                    try:
+                        proc = subprocess.run(
+                            [PYTHON, DIAPHORA_SCRIPT, sqlite1, sqlite2, "-o", diff_out],
+                            cwd=DIAPHORA_DIR,
+                            capture_output=True,
+                            text=True,
+                            timeout=3600,
+                        )
+                        batch_log.info(f"Diff exit code: {proc.returncode}")
+                        batch_log.log_subprocess_output(proc.stdout or "", proc.stderr or "")
 
-        try:
-            results = _read_results(diff_out, limit=limit, unmatched_limit=unmatched_limit)
-        except Exception as exc:
-            batch_log.error(f"Failed to read diff results: {exc}")
-            return json.dumps({"error": f"Failed to read diff results: {exc}", "steps": step_results})
+                        if proc.returncode != 0:
+                            result_data = {
+                                "error": f"Diff failed with exit code {proc.returncode}",
+                                "steps": step_results,
+                                "stdout": (proc.stdout or "")[-3000:],
+                                "stderr": (proc.stderr or "")[-3000:],
+                            }
+                        elif not os.path.isfile(diff_out):
+                            batch_log.error("Diff produced no output file")
+                            result_data = {
+                                "error": "Diff completed but no output file produced",
+                                "steps": step_results,
+                                "stdout": (proc.stdout or "")[-3000:],
+                                "stderr": (proc.stderr or "")[-3000:],
+                            }
+                        else:
+                            diff_size = os.path.getsize(diff_out)
+                            step_results["diff"] = {
+                                "output": diff_out,
+                                "size_bytes": diff_size,
+                            }
+                            batch_log.info(f"Diff output: {diff_out} ({diff_size} bytes)")
 
-        batch_log.info(f"Diff results: {results['total_matches']} matches, {results['unmatched_count']} unmatched")
-        
-        return json.dumps(
-            {
-                "success": True,
-                "steps": step_results,
-                "summary": {
-                    "best_matches": results["counts"]["best"],
-                    "partial_matches": results["counts"]["partial"],
-                    "unreliable_matches": results["counts"]["unreliable"],
-                    "multimatches": results["counts"]["multimatch"],
-                    "unmatched_primary": results["unmatched_count"],
-                },
-                "results": results,
-            },
-            indent=2,
-            default=str,
-        )
+                            # Step 4: read and return results
+                            from .diff import read_results as _read_results
+                            try:
+                                results = _read_results(diff_out, limit=limit, unmatched_limit=unmatched_limit)
+                                batch_log.info(f"Diff results: {results['total_matches']} matches, {results['unmatched_count']} unmatched")
+                                result_data = {
+                                    "success": True,
+                                    "steps": step_results,
+                                    "summary": {
+                                        "best_matches": results["counts"]["best"],
+                                        "partial_matches": results["counts"]["partial"],
+                                        "unreliable_matches": results["counts"]["unreliable"],
+                                        "multimatches": results["counts"]["multimatch"],
+                                        "unmatched_primary": results["unmatched_count"],
+                                    },
+                                    "results": results,
+                                }
+                            except Exception as exc:
+                                batch_log.error(f"Failed to read diff results: {exc}")
+                                result_data = {"error": f"Failed to read diff results: {exc}", "steps": step_results}
 
-    finally:
-        if cleanup:
-            batch_log.info("Cleaning up temporary SQLite and WAL databases...")
-            for path in [sqlite1, f"{sqlite1}-wal", f"{sqlite1}-shm",
-                         sqlite2, f"{sqlite2}-wal", f"{sqlite2}-shm"]:
-                try:
-                    if os.path.exists(path):
-                        force_delete_file(path)
-                except Exception as e:
-                    batch_log.warn(f"Failed to delete temporary file {path}: {e}")
+                    except subprocess.TimeoutExpired:
+                        batch_log.error("Diff timed out after 3600 s")
+                        result_data = {"error": "Diff timed out after 3600 s", "steps": step_results}
+                    except Exception as exc:
+                        batch_log.error(f"Diff failed: {exc}")
+                        result_data = {"error": f"Diff failed: {exc}", "steps": step_results}
 
-        batch_log.__exit__(None, None, None)
+        finally:
+            if cleanup:
+                batch_log.info("Cleaning up temporary SQLite and WAL databases...")
+                for path in [sqlite1, f"{sqlite1}-wal", f"{sqlite1}-shm",
+                             sqlite2, f"{sqlite2}-wal", f"{sqlite2}-shm"]:
+                    try:
+                        if os.path.exists(path):
+                            force_delete_file(path)
+                    except Exception as e:
+                        batch_log.warn(f"Failed to delete temporary file {path}: {e}")
+
+    return dumps(result_data)

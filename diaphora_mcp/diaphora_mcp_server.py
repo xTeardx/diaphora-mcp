@@ -43,12 +43,15 @@ mcp = FastMCP("Diaphora")
 mcp.tool(
     description="Export an IDB/i64 database to Diaphora SQLite using idat.exe headless. "
     "use_decompiler=True adds pseudocode but makes export 10-30x slower. "
-    "Default is False for a quick first pass."
+    "Default is False for a quick first pass. "
+    "summaries_only=True skips detailed assembly/pseudocode for much faster export on large binaries. "
+    "When summaries_only=None (default), auto-detects based on file size (>100 MB enables summaries)."
 )(_export_idb_to_diaphora)
 
 mcp.tool(
     description="Complete pipeline: export two IDB databases, diff them, and return a summary. "
-    "use_decompiler=True adds pseudocode but makes export significantly slower."
+    "use_decompiler=True adds pseudocode but makes export significantly slower. "
+    "summaries_only=True/False/auto — see export_idb_to_diaphora for details."
 )(_batch_export_and_diff)
 
 # ---------------------------------------------------------------------------

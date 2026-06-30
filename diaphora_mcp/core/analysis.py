@@ -4,12 +4,11 @@ Diaphora MCP — function-level analysis.
 Search, compare, and explain individual functions across databases.
 """
 
-import json
 import os
 import sqlite3
 
-from ..utils.sqlite import check_db, get_func, get_callgraph, resolve_func_names
-from ..utils.format import pseudocode_simple_diff, func_features
+from ..utils.sqlite import check_db, get_func, get_callgraph, resolve_func_names, norm_addr
+from ..utils.format import pseudocode_simple_diff, func_features, dumps, err_json
 
 
 # ---------------------------------------------------------------------------
@@ -27,65 +26,61 @@ def search_export_db(
     """Query functions in an exported Diaphora .sqlite database."""
     err = check_db(db_path)
     if err:
-        return json.dumps({"error": err})
+        return err_json(err)
 
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
 
-    conditions = []
-    params = []
+        conditions = []
+        params = []
 
-    if name_pattern:
-        conditions.append("name LIKE ?")
-        params.append(name_pattern)
-    if min_instructions > 0:
-        conditions.append("instructions >= ?")
-        params.append(min_instructions)
-    if max_instructions > 0:
-        conditions.append("instructions <= ?")
-        params.append(max_instructions)
-    if min_complexity > 0:
-        conditions.append("cyclomatic_complexity >= ?")
-        params.append(min_complexity)
-    if max_complexity > 0:
-        conditions.append("cyclomatic_complexity <= ?")
-        params.append(max_complexity)
+        if name_pattern:
+            conditions.append("name LIKE ?")
+            params.append(name_pattern)
+        if min_instructions > 0:
+            conditions.append("instructions >= ?")
+            params.append(min_instructions)
+        if max_instructions > 0:
+            conditions.append("instructions <= ?")
+            params.append(max_instructions)
+        if min_complexity > 0:
+            conditions.append("cyclomatic_complexity >= ?")
+            params.append(min_complexity)
+        if max_complexity > 0:
+            conditions.append("cyclomatic_complexity <= ?")
+            params.append(max_complexity)
 
-    where = " AND ".join(conditions) if conditions else "1=1"
+        where = " AND ".join(conditions) if conditions else "1=1"
 
-    cur.execute(f"SELECT count(*) FROM functions WHERE {where}", params)
-    total = cur.fetchone()[0]
+        cur.execute(f"SELECT count(*) FROM functions WHERE {where}", params)
+        total = cur.fetchone()[0]
 
-    cur.execute(
-        f"""SELECT name, address, nodes, edges, instructions,
-                   cyclomatic_complexity, prototype, bytes_hash
-            FROM functions
-            WHERE {where}
-            ORDER BY instructions DESC
-            LIMIT ?""",
-        params + [limit],
-    )
-    functions = [dict(r) for r in cur.fetchall()]
+        cur.execute(
+            f"""SELECT name, address, nodes, edges, instructions,
+                       cyclomatic_complexity, prototype, bytes_hash
+                FROM functions
+                WHERE {where}
+                ORDER BY instructions DESC
+                LIMIT ?""",
+            params + [limit],
+        )
+        functions = [dict(r) for r in cur.fetchall()]
 
-    cur.execute("SELECT count(*) FROM functions")
-    total_funcs = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM functions")
+        total_funcs = cur.fetchone()[0]
 
-    cur.execute("SELECT * FROM program")
-    program = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT * FROM program")
+        program = [dict(r) for r in cur.fetchall()]
 
-    conn.close()
-
-    return json.dumps(
+    return dumps(
         {
             "program": program,
             "total_functions_in_db": total_funcs,
             "matching_functions": total,
             "truncated": total > limit,
             "functions": functions,
-        },
-        indent=2,
-        default=str,
+        }
     )
 
 
@@ -97,74 +92,67 @@ def get_function_pseudocode(
     """Retrieve pseudocode + metadata for a function."""
     err = check_db(db_path)
     if err:
-        return json.dumps({"error": err})
+        return err_json(err)
 
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
 
-    if address:
-        addr = address.lower().removeprefix("0x")
-        cur.execute(
-            """SELECT name, address, pseudocode, assembly, prototype,
-                      instructions, cyclomatic_complexity
-               FROM functions WHERE address = ?""",
-            (addr,),
-        )
-    elif name:
-        cur.execute(
-            """SELECT name, address, pseudocode, assembly, prototype,
-                      instructions, cyclomatic_complexity
-               FROM functions WHERE name = ?""",
-            (name,),
-        )
-    else:
-        return json.dumps({"error": "Provide either address or name"})
+        if address:
+            addr = norm_addr(address)
+            cur.execute(
+                """SELECT name, address, pseudocode, assembly, prototype,
+                          instructions, cyclomatic_complexity
+                   FROM functions WHERE address = ?""",
+                (addr,),
+            )
+        elif name:
+            cur.execute(
+                """SELECT name, address, pseudocode, assembly, prototype,
+                          instructions, cyclomatic_complexity
+                   FROM functions WHERE name = ?""",
+                (name,),
+            )
+        else:
+            return err_json("Provide either address or name")
 
-    row = cur.fetchone()
-    conn.close()
+        row = cur.fetchone()
 
     if not row:
-        return json.dumps(
-            {"error": f"Function not found (address={address}, name={name})"}
-        )
+        return err_json(f"Function not found (address={address}, name={name})")
 
-    return json.dumps(dict(row), indent=2, default=str)
+    return dumps(dict(row))
 
 
 def get_export_info(db_path: str) -> str:
     """Show metadata from a Diaphora export database."""
     err = check_db(db_path)
     if err:
-        return json.dumps({"error": err})
+        return err_json(err)
 
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
 
-    cur.execute("SELECT count(*) FROM functions")
-    func_count = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM functions")
+        func_count = cur.fetchone()[0]
 
-    cur.execute("SELECT * FROM program")
-    program = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT * FROM program")
+        program = [dict(r) for r in cur.fetchall()]
 
-    # SUM(instructions) is much faster than SELECT count(*) FROM instructions
-    # on large databases (instructions can have 10M+ rows)
-    cur.execute("SELECT COALESCE(SUM(instructions), 0) FROM functions")
-    insn_count = cur.fetchone()[0]
+        # SUM(instructions) is much faster than SELECT count(*) FROM instructions
+        # on large databases (instructions can have 10M+ rows)
+        cur.execute("SELECT COALESCE(SUM(instructions), 0) FROM functions")
+        insn_count = cur.fetchone()[0]
 
-    conn.close()
-
-    return json.dumps(
+    return dumps(
         {
             "database": os.path.basename(db_path),
             "size_bytes": os.path.getsize(db_path),
             "program": program,
             "function_count": func_count,
             "instruction_count": insn_count,
-        },
-        indent=2,
-        default=str,
+        }
     )
 
 
@@ -177,57 +165,52 @@ def compare_functions(
     """Retrieve a function's data from both databases for side-by-side comparison."""
     err1 = check_db(db1_path)
     if err1:
-        return json.dumps({"error": err1})
+        return err_json(err1)
     err2 = check_db(db2_path)
     if err2:
-        return json.dumps({"error": err2})
+        return err_json(err2)
 
     if not address and not name:
-        return json.dumps({"error": "Provide either address or name"})
+        return err_json("Provide either address or name")
 
     def _lookup(db_path, lookup_addr, lookup_name):
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
 
-        if lookup_addr:
-            addr = lookup_addr.lower().removeprefix("0x")
-            cur.execute(
-                """SELECT name, address, pseudocode, assembly, prototype,
-                          instructions, cyclomatic_complexity, nodes, edges,
-                          bytes_hash, constants
-                   FROM functions WHERE address = ?""",
-                (addr,),
-            )
-        elif lookup_name:
-            cur.execute(
-                """SELECT name, address, pseudocode, assembly, prototype,
-                          instructions, cyclomatic_complexity, nodes, edges,
-                          bytes_hash, constants
-                   FROM functions WHERE name = ?""",
-                (lookup_name,),
-            )
+            if lookup_addr:
+                addr = norm_addr(lookup_addr)
+                cur.execute(
+                    """SELECT name, address, pseudocode, assembly, prototype,
+                              instructions, cyclomatic_complexity, nodes, edges,
+                              bytes_hash, constants
+                       FROM functions WHERE address = ?""",
+                    (addr,),
+                )
+            elif lookup_name:
+                cur.execute(
+                    """SELECT name, address, pseudocode, assembly, prototype,
+                              instructions, cyclomatic_complexity, nodes, edges,
+                              bytes_hash, constants
+                       FROM functions WHERE name = ?""",
+                    (lookup_name,),
+                )
 
-        row = cur.fetchone()
-        conn.close()
-        return dict(row) if row else None
+            row = cur.fetchone()
+            return dict(row) if row else None
 
     func1 = _lookup(db1_path, address, name)
     if not func1:
-        return json.dumps(
-            {"error": f"Function not found in primary database (address={address}, name={name})"}
-        )
+        return err_json(f"Function not found in primary database (address={address}, name={name})")
 
     func2 = _lookup(db2_path, address, name)
     if not func2:
-        return json.dumps(
+        return dumps(
             {
                 "warning": "Function not found in secondary database",
                 "primary": func1,
                 "secondary": None,
-            },
-            indent=2,
-            default=str,
+            }
         )
 
     def _short(row):
@@ -244,7 +227,7 @@ def compare_functions(
             "bytes_hash": row.get("bytes_hash", ""),
         }
 
-    return json.dumps(
+    return dumps(
         {
             "function_old": _short(func1),
             "function_new": _short(func2),
@@ -262,9 +245,7 @@ def compare_functions(
                 "address_old": func1.get("address", ""),
                 "address_new": func2.get("address", ""),
             },
-        },
-        indent=2,
-        default=str,
+        }
     )
 
 
@@ -278,19 +259,17 @@ def find_function_match(
     reference in the first (old) binary."""
     err1 = check_db(db1_path)
     if err1:
-        return json.dumps({"error": err1})
+        return err_json(err1)
     err2 = check_db(db2_path)
     if err2:
-        return json.dumps({"error": err2})
+        return err_json(err2)
 
     if not address and not name:
-        return json.dumps({"error": "Provide either address or name"})
+        return err_json("Provide either address or name")
 
     func1 = get_func(db1_path, address, name)
     if not func1:
-        return json.dumps(
-            {"error": f"Function not found in primary database (addr={address}, name={name})"}
-        )
+        return err_json(f"Function not found in primary database (addr={address}, name={name})")
 
     addr = func1["address"]
     fname = func1["name"]
@@ -314,67 +293,64 @@ def find_function_match(
     # 3. Bytes hash match
     bh = func1.get("bytes_hash", "")
     if bh:
-        conn2 = sqlite3.connect(db2_path)
-        conn2.row_factory = sqlite3.Row
-        cur2 = conn2.cursor()
-        cur2.execute("SELECT * FROM functions WHERE bytes_hash = ?", (bh,))
-        for row in cur2.fetchall():
-            fd = dict(row)
-            if not any(c["address"] == fd["address"] for c, _, _ in candidates):
-                candidates.append((fd, 0.9, "bytes_hash"))
-                strategies.append("bytes_hash")
-        conn2.close()
+        with sqlite3.connect(db2_path) as conn2:
+            conn2.row_factory = sqlite3.Row
+            cur2 = conn2.cursor()
+            cur2.execute("SELECT * FROM functions WHERE bytes_hash = ?", (bh,))
+            for row in cur2.fetchall():
+                fd = dict(row)
+                if not any(c["address"] == fd["address"] for c, _, _ in candidates):
+                    candidates.append((fd, 0.9, "bytes_hash"))
+                    strategies.append("bytes_hash")
 
     # 4. Prototype match
     proto = func1.get("prototype", "")
     if proto and len(proto) > 5:
-        conn2 = sqlite3.connect(db2_path)
-        conn2.row_factory = sqlite3.Row
-        cur2 = conn2.cursor()
-        cur2.execute("SELECT * FROM functions WHERE prototype = ?", (proto,))
-        for row in cur2.fetchall():
-            fd = dict(row)
-            if not any(c["address"] == fd["address"] for c, _, _ in candidates):
-                candidates.append((fd, 0.7, "prototype"))
-                strategies.append("prototype")
-        conn2.close()
+        with sqlite3.connect(db2_path) as conn2:
+            conn2.row_factory = sqlite3.Row
+            cur2 = conn2.cursor()
+            cur2.execute("SELECT * FROM functions WHERE prototype = ?", (proto,))
+            for row in cur2.fetchall():
+                fd = dict(row)
+                if not any(c["address"] == fd["address"] for c, _, _ in candidates):
+                    candidates.append((fd, 0.7, "prototype"))
+                    strategies.append("prototype")
 
     # 5. Heuristic: closest by feature vector
     feat1 = func_features(func1)
-    conn2 = sqlite3.connect(db2_path)
-    conn2.row_factory = sqlite3.Row
-    cur2 = conn2.cursor()
-    cur2.execute(
-        "SELECT * FROM functions WHERE instructions BETWEEN ? AND ?",
-        (max(0, feat1["instructions"] - 10), feat1["instructions"] + 10),
-    )
-    heuristic_candidates = []
-    for row in cur2.fetchall():
-        fd = dict(row)
-        if any(c["address"] == fd["address"] for c, _, _ in candidates):
-            continue
-        feat2 = func_features(fd)
-        score = 0.0
-        if feat1["nodes"] == feat2["nodes"]:
-            score += 0.15
-        elif abs(feat1["nodes"] - feat2["nodes"]) <= 2:
-            score += 0.08
-        if feat1["edges"] == feat2["edges"]:
-            score += 0.15
-        elif abs(feat1["edges"] - feat2["edges"]) <= 2:
-            score += 0.08
-        if feat1["cyclomatic_complexity"] == feat2["cyclomatic_complexity"]:
-            score += 0.10
-        if feat1["loops"] == feat2["loops"]:
-            score += 0.05
-        if feat1["mnemonics"] == feat2["mnemonics"]:
-            score += 0.20
-        if feat1["constants"] == feat2["constants"]:
-            score += 0.15
-        if feat1["prototype"] and feat1["prototype"] == feat2["prototype"]:
-            score += 0.20
-        heuristic_candidates.append((fd, score))
-    conn2.close()
+    with sqlite3.connect(db2_path) as conn2:
+        conn2.row_factory = sqlite3.Row
+        cur2 = conn2.cursor()
+        cur2.execute(
+            "SELECT * FROM functions WHERE instructions BETWEEN ? AND ?",
+            (max(0, feat1["instructions"] - 10), feat1["instructions"] + 10),
+        )
+        heuristic_candidates = []
+        for row in cur2.fetchall():
+            fd = dict(row)
+            if any(c["address"] == fd["address"] for c, _, _ in candidates):
+                continue
+            feat2 = func_features(fd)
+            score = 0.0
+            if feat1["nodes"] == feat2["nodes"]:
+                score += 0.15
+            elif abs(feat1["nodes"] - feat2["nodes"]) <= 2:
+                score += 0.08
+            if feat1["edges"] == feat2["edges"]:
+                score += 0.15
+            elif abs(feat1["edges"] - feat2["edges"]) <= 2:
+                score += 0.08
+            if feat1["cyclomatic_complexity"] == feat2["cyclomatic_complexity"]:
+                score += 0.10
+            if feat1["loops"] == feat2["loops"]:
+                score += 0.05
+            if feat1["mnemonics"] == feat2["mnemonics"]:
+                score += 0.20
+            if feat1["constants"] == feat2["constants"]:
+                score += 0.15
+            if feat1["prototype"] and feat1["prototype"] == feat2["prototype"]:
+                score += 0.20
+            heuristic_candidates.append((fd, score))
 
     heuristic_candidates.sort(key=lambda x: -x[1])
     for fd, sc in heuristic_candidates[:3]:
@@ -387,15 +363,14 @@ def find_function_match(
 
     if not candidates:
         if fname:
-            conn2 = sqlite3.connect(db2_path)
-            cur2 = conn2.cursor()
-            cur2.execute("SELECT name, address FROM functions WHERE name LIKE ?",
-                         (f"%{fname[:16]}%",))
-            similar = [{"name": r[0], "address": r[1]} for r in cur2.fetchall()[:10]]
-            conn2.close()
+            with sqlite3.connect(db2_path) as conn2:
+                cur2 = conn2.cursor()
+                cur2.execute("SELECT name, address FROM functions WHERE name LIKE ?",
+                             (f"%{fname[:16]}%",))
+                similar = [{"name": r[0], "address": r[1]} for r in cur2.fetchall()[:10]]
         else:
             similar = []
-        return json.dumps({
+        return dumps({
             "matched": False,
             "primary_function": {
                 "name": func1["name"],
@@ -403,7 +378,7 @@ def find_function_match(
             },
             "similar_named_in_secondary": similar,
             "strategies_tried": strategies,
-        }, indent=2, default=str)
+        })
 
     candidates.sort(key=lambda x: -x[1])
     func2, confidence, method = candidates[0]
@@ -411,7 +386,7 @@ def find_function_match(
     feat1 = func_features(func1)
     feat2 = func_features(func2)
 
-    return json.dumps({
+    return dumps({
         "matched": True,
         "confidence": confidence,
         "method": method,
@@ -453,7 +428,7 @@ def find_function_match(
             "addr1": func1["address"],
             "addr2": func2["address"],
         },
-    }, indent=2, default=str)
+    })
 
 
 def explain_similarity(
@@ -600,7 +575,7 @@ def explain_similarity(
     total_weight = sum(f["weight"] for f in factors)
     estimated_similarity = round(matched_weight / max(total_weight, 1) * 100, 1)
 
-    return json.dumps({
+    return dumps({
         "primary_function": {
             "name": f1.get("name", ""),
             "address": f1.get("address", ""),
@@ -618,7 +593,7 @@ def explain_similarity(
         "factors": factors,
         "matching_factors": [f["factor"] for f in factors if f.get("match")],
         "differing_factors": [f["factor"] for f in factors if not f.get("match")],
-    }, indent=2, default=str)
+    })
 
 
 def detect_behavior_change(
@@ -630,33 +605,29 @@ def detect_behavior_change(
     """Analyse a single function across two versions and describe what behaviour changed."""
     err1 = check_db(db1_path)
     if err1:
-        return json.dumps({"error": err1})
+        return err_json(err1)
     err2 = check_db(db2_path)
     if err2:
-        return json.dumps({"error": err2})
+        return err_json(err2)
 
     if not address and not name:
-        return json.dumps({"error": "Provide either address or name"})
+        return err_json("Provide either address or name")
 
     if not address and name:
         f1 = get_func(db1_path, name=name)
         if f1:
             address = f1["address"]
-
-    if not address:
-        f1 = get_func(db1_path, name=name) if name else None
-        if not f1:
-            return json.dumps({"error": f"Function not found"})
-        address = f1["address"]
+        else:
+            return err_json(f"Function '{name}' not found in db1")
 
     f1 = get_func(db1_path, address=address)
     f2 = get_func(db2_path, address=address)
 
     if not f1 and not f2:
-        return json.dumps({"error": f"Function 0x{address} not found in either database"})
+        return err_json(f"Function 0x{address} not found in either database")
 
     if not f1:
-        return json.dumps({
+        return dumps({
             "change_type": "new_function",
             "address": address,
             "function_new": {
@@ -665,10 +636,10 @@ def detect_behavior_change(
                 "complexity": f2.get("cyclomatic_complexity", 0),
             },
             "description": f"Function NEW in the update — not present in the old binary",
-        }, indent=2, default=str)
+        })
 
     if not f2:
-        return json.dumps({
+        return dumps({
             "change_type": "deleted_function",
             "address": address,
             "function_old": {
@@ -677,7 +648,7 @@ def detect_behavior_change(
                 "complexity": f1.get("cyclomatic_complexity", 0),
             },
             "description": f"Function REMOVED in the update — present only in the old binary",
-        }, indent=2, default=str)
+        })
 
     name1 = f1.get("name", "")
     name2 = f2.get("name", "")
@@ -760,7 +731,7 @@ def detect_behavior_change(
     elif pseudo_change_pct > 10:
         changes.append(f"pseudocode moderately changed ({pseudo_change_pct}% changed, +{added_count}/–{removed_count} lines)")
 
-    return json.dumps({
+    return dumps({
         "function_name_old": name1,
         "function_name_new": name2,
         "address": address,
@@ -787,4 +758,4 @@ def detect_behavior_change(
             "addr1": address,
             "addr2": address,
         },
-    }, indent=2, default=str)
+    })

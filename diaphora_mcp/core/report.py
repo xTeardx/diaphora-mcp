@@ -12,6 +12,7 @@ import sqlite3
 
 from ..utils.sqlite import get_func, get_funcs_batch, get_underlying_db_paths
 from ..core.security import match_security_keywords
+from ..utils.format import dumps, err_json
 
 
 def summarize_patch(
@@ -19,24 +20,22 @@ def summarize_patch(
 ) -> str:
     """Create a full patch analysis report from a .diaphora results file."""
     if not os.path.isfile(results_path):
-        return json.dumps({"error": f"Results file not found: {results_path}"})
+        return err_json(f"Results file not found: {results_path}")
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 
-    conn = sqlite3.connect(results_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
+    with sqlite3.connect(results_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
 
-    cur.execute("SELECT * FROM config")
-    config_info = dict(cur.fetchone() or {})
+        cur.execute("SELECT * FROM config")
+        config_info = dict(cur.fetchone() or {})
 
-    cur.execute("SELECT * FROM results")
-    results = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT * FROM results")
+        results = [dict(r) for r in cur.fetchall()]
 
-    cur.execute("SELECT * FROM unmatched")
-    unmatched = [dict(r) for r in cur.fetchall()]
-
-    conn.close()
+        cur.execute("SELECT * FROM unmatched")
+        unmatched = [dict(r) for r in cur.fetchall()]
 
     # Statistics
     total = len(results)
@@ -76,31 +75,29 @@ def summarize_patch(
     prog1 = prog2 = {}
     if db1_path:
         try:
-            conn1 = sqlite3.connect(db1_path)
-            cur1 = conn1.cursor()
-            cur1.execute("SELECT * FROM program")
-            row = cur1.fetchone()
-            if row:
-                prog1 = dict(zip([d[0] for d in cur1.description], row))
-            conn1.close()
+            with sqlite3.connect(db1_path) as conn1:
+                cur1 = conn1.cursor()
+                cur1.execute("SELECT * FROM program")
+                row = cur1.fetchone()
+                if row:
+                    prog1 = dict(zip([d[0] for d in cur1.description], row))
         except Exception:
             pass
     if db2_path:
         try:
-            conn2 = sqlite3.connect(db2_path)
-            cur2 = conn2.cursor()
-            cur2.execute("SELECT * FROM program")
-            row = cur2.fetchone()
-            if row:
-                prog2 = dict(zip([d[0] for d in cur2.description], row))
-            conn2.close()
+            with sqlite3.connect(db2_path) as conn2:
+                cur2 = conn2.cursor()
+                cur2.execute("SELECT * FROM program")
+                row = cur2.fetchone()
+                if row:
+                    prog2 = dict(zip([d[0] for d in cur2.description], row))
         except Exception:
             pass
 
     unmatched_primary = [u for u in unmatched if u.get("type") == "primary"]
     unmatched_secondary = [u for u in unmatched if u.get("type") == "secondary"]
 
-    return json.dumps({
+    return dumps({
         "report_title": "Diaphora Patch Analysis Report",
         "binaries": {
             "primary": {
@@ -151,4 +148,4 @@ def summarize_patch(
             "Use rank_changes for a sorted priority list, find_patch_root for root cause candidates, "
             "or analyze_diff_results for detailed security filtering.",
         ],
-    }, indent=2, default=str)
+    })

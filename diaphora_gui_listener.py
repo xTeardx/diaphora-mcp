@@ -25,6 +25,10 @@ class DiaphoraGuiAPI:
         print("[Diaphora MCP] Received ping request")
         return True
 
+    def version(self) -> int:
+        """Return the API version of this listener. 2 = summaries_only supported."""
+        return 2
+
     def export_current_db(self, output_path: str, use_decompiler: bool, summaries_only: bool = False) -> bool | str:
         """Triggers export of the active database in the main IDA GUI thread."""
         print(

@@ -10,7 +10,7 @@ import os
 import sqlite3
 
 from ..utils.sqlite import get_func, get_funcs_batch, get_underlying_db_paths
-from ..utils.format import pseudocode_simple_diff
+from ..utils.format import pseudocode_simple_diff, dumps, err_json
 from ..core.security import match_security_keywords
 
 
@@ -51,20 +51,17 @@ def rank_changes(
     """Analyse a .diaphora results file and rank every match by a composite
     importance score (0–100)."""
     if not os.path.isfile(results_path):
-        return json.dumps({"error": f"Results file not found: {results_path}"})
+        return err_json(f"Results file not found: {results_path}")
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 
-    conn = sqlite3.connect(results_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    cur.execute("SELECT * FROM results")
-    all_rows = [dict(r) for r in cur.fetchall()]
-
-    cur.execute("SELECT * FROM config")
-    config_info = dict(cur.fetchone() or {})
-    conn.close()
+    with sqlite3.connect(results_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM results")
+        all_rows = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT * FROM config")
+        config_info = dict(cur.fetchone() or {})
 
     ranked = []
 
@@ -121,7 +118,7 @@ def rank_changes(
 
     ranked.sort(key=lambda x: -x["score"])
 
-    return json.dumps({
+    return dumps({
         "config": config_info,
         "total_matches": len(ranked),
         "top_n": min(top_n, len(ranked)),
@@ -131,4 +128,4 @@ def rank_changes(
             "medium_interest": sum(1 for r in ranked if 40 <= r["score"] < 70),
             "low_interest": sum(1 for r in ranked if r["score"] < 40),
         },
-    }, indent=2, default=str)
+    })

@@ -10,6 +10,7 @@ import sqlite3
 
 from ..models import SECURITY_KEYWORDS, SECURITY_KEYWORD_CATEGORIES
 from ..utils.sqlite import get_underlying_db_paths, get_func, get_funcs_batch
+from ..utils.format import dumps, err_json
 
 
 # ---------------------------------------------------------------------------
@@ -59,27 +60,27 @@ def analyze_diff_results(
     and full context (address, database path) for IDA Pro MCP drill-down.
     """
     if not os.path.isfile(results_path):
-        return json.dumps({"error": f"Results file not found: {results_path}"})
+        return err_json(f"Results file not found: {results_path}")
 
-    conn = sqlite3.connect(results_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
+    with sqlite3.connect(results_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
 
-    cur.execute("SELECT * FROM config")
-    config_info = dict(cur.fetchone() or {})
+        cur.execute("SELECT * FROM config")
+        config_info = dict(cur.fetchone() or {})
 
-    try:
-        cur.execute("SELECT * FROM matching_databases")
-        databases = [dict(r) for r in cur.fetchall()]
-    except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        databases = []
+        try:
+            cur.execute("SELECT * FROM matching_databases")
+            databases = [dict(r) for r in cur.fetchall()]
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            databases = []
 
-    db1_path = config_info.get("main_db") or config_info.get("primary_database", "")
-    db2_path = config_info.get("diff_db") or config_info.get("secondary_database", "")
+        db1_path = config_info.get("main_db") or config_info.get("primary_database", "")
+        db2_path = config_info.get("diff_db") or config_info.get("secondary_database", "")
 
-    # Read all results from the .diaphora file directly
-    cur.execute("SELECT * FROM results")
-    all_results = [dict(r) for r in cur.fetchall()]
+        # Read all results from the .diaphora file directly
+        cur.execute("SELECT * FROM results")
+        all_results = [dict(r) for r in cur.fetchall()]
 
     # Batch-load function details from underlying databases
     addrs1 = [r.get("address", "") for r in all_results]
@@ -169,9 +170,7 @@ def analyze_diff_results(
     cur.execute("SELECT * FROM unmatched")
     unmatched = [dict(r) for r in cur.fetchall()]
 
-    conn.close()
-
-    return json.dumps(
+    return dumps(
         {
             "config": {
                 "primary_database": db1_path,
@@ -212,16 +211,15 @@ def detect_security_patches(
       (logic rewrite without structural change)
     """
     if not os.path.isfile(results_path):
-        return json.dumps({"error": f"Results file not found: {results_path}"})
+        return err_json(f"Results file not found: {results_path}")
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 
-    conn = sqlite3.connect(results_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM results")
-    results = [dict(r) for r in cur.fetchall()]
-    conn.close()
+    with sqlite3.connect(results_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.conn.cursor() if hasattr(conn, "conn") else conn.cursor()
+        cur.execute("SELECT * FROM results")
+        results = [dict(r) for r in cur.fetchall()]
 
     from ..utils.format import pseudocode_simple_diff
 
@@ -330,7 +328,7 @@ def detect_security_patches(
         -len(x["indicators"]),
     ))
 
-    return json.dumps({
+    return dumps({
         "total_matches_analysed": len(results),
         "security_patches_found": len(security_patches),
         "severity_summary": {
@@ -349,4 +347,4 @@ def detect_security_patches(
             "Review high-severity items first. Use compare_functions or "
             "IDA Pro MCP (decompile_function) on the addresses above."
         ),
-    }, indent=2, default=str)
+    })
