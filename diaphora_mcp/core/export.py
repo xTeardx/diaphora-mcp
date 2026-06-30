@@ -140,6 +140,23 @@ def run_export(idb_path: str, output_path: str, use_decompiler: bool) -> str | N
             )
 
         log.info(f"Export OK — {os.path.getsize(output_path)} bytes, functions OK")
+
+        # Post-check: program table must be filled for diff to work
+        try:
+            import sqlite3
+            _pc = sqlite3.connect(output_path)
+            _pcur = _pc.cursor()
+            _pcur.execute("SELECT count(*) FROM program")
+            if _pcur.fetchone()[0] == 0:
+                log.warn(
+                    "Export incomplete: program table is empty. "
+                    "Callgraph metadata not written — diff will fail on this database. "
+                    "This happens when IDA crashes during finalization (see Problems.md #3)."
+                )
+            _pc.close()
+        except Exception:
+            pass
+
         return None  # success
 
 
@@ -207,6 +224,25 @@ def export_idb_to_diaphora(
     }
     if log_warn:
         result["warning"] = log_warn
+
+    # Check if program table was filled (required for diff)
+    try:
+        import sqlite3
+        _c = sqlite3.connect(output_path)
+        _r = _c.execute("SELECT count(*) FROM program").fetchone()[0]
+        if _r == 0:
+            prog_warn = (
+                "Export incomplete: program table is empty. "
+                "Diff will fail — see Problems.md #3."
+            )
+            if "warning" in result:
+                result["warning"] += " " + prog_warn
+            else:
+                result["warning"] = prog_warn
+        _c.close()
+    except Exception:
+        pass
+
     return json.dumps(result, indent=2, default=str)
 
 
@@ -224,6 +260,10 @@ def batch_export_and_diff(
     """
     b1 = os.path.splitext(os.path.basename(idb1_path))[0]
     b2 = os.path.splitext(os.path.basename(idb2_path))[0]
+
+    if not output_dir:
+        output_dir = os.path.dirname(os.path.abspath(idb1_path))
+    os.makedirs(output_dir, exist_ok=True)
 
     sqlite1 = os.path.join(output_dir, f"{b1}.sqlite")
     sqlite2 = os.path.join(output_dir, f"{b2}.sqlite")

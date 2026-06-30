@@ -21,6 +21,47 @@ def check_db(path: str) -> str | None:
     return None
 
 
+def check_db_for_diff(path: str) -> str | None:
+    """Strict check: DB must have data AND filled program table (for diff).
+
+    Diff requires callgraph_primes in the program table, which is only
+    written at the very end of a successful headless export.  If the
+    program table is empty, the export likely crashed during
+    finalization (see problem #3 in Problems.md).
+    """
+    err = check_db(path)
+    if err:
+        return err
+
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    try:
+        # Functions count
+        cur.execute("SELECT count(*) FROM functions")
+        funcs = cur.fetchone()[0]
+        if funcs == 0:
+            return f"Database has 0 functions (export incomplete or empty)"
+
+        # Program table — must have callgraph primes for diff
+        cur.execute("SELECT count(*) FROM program")
+        prog_rows = cur.fetchone()[0]
+        if prog_rows == 0:
+            return (
+                f"Database export incomplete: program table is empty "
+                f"(export likely crashed before finalization). "
+                f"Found {funcs} functions but missing callgraph metadata."
+            )
+
+        # Program table must have callgraph_primes filled
+        cur.execute("SELECT callgraph_primes FROM program WHERE callgraph_primes IS NOT NULL AND callgraph_primes != ''")
+        if cur.fetchone() is None:
+            return f"Database export incomplete: callgraph_primes is empty in program table"
+
+        return None
+    finally:
+        conn.close()
+
+
 def get_func(db_path: str, address: str = "", name: str = "") -> dict | None:
     """Return the full function row from an export .sqlite database.
 

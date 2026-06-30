@@ -12,7 +12,7 @@ import subprocess
 import time
 
 from ..config import DIAPHORA_SCRIPT, DIAPHORA_DIR, PYTHON
-from ..utils.sqlite import check_db
+from ..utils.sqlite import check_db, check_db_for_diff
 from ..utils.log import OperationLogger, log_path, write_log
 from ..models import MATCH_TYPES
 
@@ -75,10 +75,10 @@ def diff_diaphora_dbs(
     output_path: str | None = None,
 ) -> str:
     """Diff two exported Diaphora databases and return the results."""
-    err1 = check_db(db1_path)
+    err1 = check_db_for_diff(db1_path)
     if err1:
         return json.dumps({"error": err1})
-    err2 = check_db(db2_path)
+    err2 = check_db_for_diff(db2_path)
     if err2:
         return json.dumps({"error": err2})
 
@@ -111,25 +111,33 @@ def diff_diaphora_dbs(
         for line in proc.stdout:
             clean = line.rstrip("\n\r")
             stdout_lines.append(clean)
-            # Log each Diaphora INFO line immediately
             if clean.startswith("[Diaphora:"):
                 log.info(f"  diaphora> {clean.split('] ', 1)[-1]}")
-        stdout = "\n".join(stdout_lines)
-        stderr = proc.stderr.read() if proc.stderr else ""
+        stdout_str = "\n".join(stdout_lines)
+        stderr_str = proc.stderr.read() if proc.stderr else ""
 
         # Wait with timeout
         try:
             proc.wait(timeout=3600)
         except subprocess.TimeoutExpired:
             proc.kill()
-            log.error("Diaphora diff timed out after 3600 s")
+            log.error("Diff timed out after 3600 s")
             log.__exit__(None, None, None)
             return json.dumps({"error": "Diaphora diff timed out after 3600 s"})
 
         elapsed = time.time() - start
         log.info(f"diaphora.py exit code: {proc.returncode} ({elapsed:.0f}s)")
-        if not proc.returncode == 0:
-            log.log_subprocess_output("", stderr)
+        if proc.returncode != 0:
+            log.log_subprocess_output(stdout_str, stderr_str)
+
+    except FileNotFoundError:
+        log.error(f"diaphora.py not found at {DIAPHORA_SCRIPT}")
+        log.__exit__(None, None, None)
+        return json.dumps({"error": f"diaphora.py not found at {DIAPHORA_SCRIPT}"})
+    except Exception as exc:
+        log.error(f"Failed to launch Diaphora: {exc}")
+        log.__exit__(None, None, None)
+        return json.dumps({"error": f"Failed to launch Diaphora: {exc}"})
 
     if not os.path.isfile(output_path):
         log.error("No output file produced")
@@ -137,8 +145,8 @@ def diff_diaphora_dbs(
         return json.dumps(
             {
                 "error": "Diaphora completed but did not produce an output file",
-                "stdout": (proc.stdout or "")[-3000:],
-                "stderr": (proc.stderr or "")[-3000:],
+                "stdout_tail": (stdout_str or "")[-3000:],
+                "stderr_tail": (stderr_str or "")[-3000:],
             }
         )
 
