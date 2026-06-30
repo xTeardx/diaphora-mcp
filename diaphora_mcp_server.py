@@ -1,4 +1,4 @@
-#!/c/Users/olegc/AppData/Local/Programs/Python/Python312/python.exe
+#!/usr/bin/env python
 """
 Diaphora MCP Server — thin entry point.
 

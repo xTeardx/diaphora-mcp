@@ -1,53 +1,55 @@
+[Читать на русском языке](README.ru.md)
+
 # Diaphora MCP
 
-**Diaphora MCP** — это MCP-сервер для автоматизированного бинарного диффинга. Он соединяет [Diaphora](https://github.com/joxeankoret/diaphora) (движок диффинга) и IDA Pro (дизассемблер) через протокол MCP, позволяя ИИ-агентам (Claude Code, etc.) выполнять сравнение бинарных файлов, находить security-патчи и анализировать изменения.
+**Diaphora MCP** is an MCP (Model Context Protocol) server for automated binary diffing. It connects [Diaphora](https://github.com/joxeankoret/diaphora) (the diffing engine) and IDA Pro (the disassembler) via the MCP protocol, allowing AI agents (such as Claude Code) to perform binary file comparison, find security patches, and analyze changes.
 
-## Возможности
+## Features
 
-- **Экспорт**: конвертация проанализированных .i64/.idb в формат Diaphora SQLite (через idat.exe headless)
-- **Диффинг**: сравнение двух экспортированных баз, фильтрация результатов по типу совпадения и ratio
-- **Анализ уязвимостей**: поиск security-релевантных изменений по ключевым словам и эвристикам
-- **Детектирование патчей**: автоматическое обнаружение новых проверок границ, null-checks, обработки ошибок, крипто-изменений
-- **Ранжирование**: сортировка изменённых функций по важности (CFG, сложность, security-индикаторы)
-- **Call Graph**: сравнение цепочек вызовов (BFS, до N уровней), поиск корневых изменений
-- **Перенос метаданных**: подготовка данных для переноса имён/комментариев/прототипов между базами
-- **Интеграция с IDA Pro MCP**: все инструменты возвращают адреса и пути для прямого вызова IDA Pro MCP
+- **Export**: Converts analyzed `.i64` / `.idb` databases to the Diaphora SQLite format (via `idat.exe` headless mode)
+- **Diffing**: Compares two exported databases, filters results by match type and ratio
+- **Vulnerability Analysis**: Searches for security-relevant changes using keyword matching and heuristics
+- **Patch Detection**: Automatically detects new bounds checks, null checks, error handling, and cryptographic changes
+- **Ranking**: Ranks changed functions by importance based on CFG, complexity jumps, and security indicators
+- **Call Graph**: Compares call paths (BFS, up to N levels), and detects root-cause changes in call cascades
+- **Metadata Transfer**: Prepares names, comments, and prototypes for transfer between databases
+- **IDA Pro MCP Integration**: All tools return addresses and database paths ready to be passed directly to IDA Pro MCP tools
 
-## Установка
+## Installation
 
-### 1. Зависимости
+### 1. Dependencies
 
 - Python 3.10+
-- [IDA Pro](https://hex-rays.com/IDA-pro/) 8.x / 9.x (для headless-экспорта через idat.exe)
-- [Diaphora](https://github.com/joxeankoret/diaphora) — плагин для IDA (установлен в IDA)
-- [Claude Code](https://claude.ai/code) (или любой MCP-клиент)
+- [IDA Pro](https://hex-rays.com/IDA-pro/) 8.x / 9.x (for headless exports via `idat.exe`)
+- [Diaphora](https://github.com/joxeankoret/diaphora) plugin installed in IDA
+- [Claude Code](https://claude.ai/code) (or any other MCP-compliant client)
 
-### 2. Установка пакета
+### 2. Package Installation
 
 ```bash
-git clone https://github.com/your-org/diaphora-mcp.git
+git clone https://github.com/xTeardx/diaphora-mcp.git
 cd diaphora-mcp
 pip install -e .
 ```
 
-### 3. Конфигурация путей
+### 3. Path Configuration
 
-Пакет пытается **автоматически найти** IDA и Diaphora в стандартных местах установки. Если не находит — можно указать переменные окружения:
+The package tries to **automatically find** IDA Pro and Diaphora in standard installation locations. If not found, you can set the following environment variables:
 
-| Переменная | Что указывает | Пример |
-|-----------|--------------|--------|
-| `IDAT_PATH` | Полный путь к idat.exe | `C:\Program Files\IDA Pro 9.3\idat.exe` |
-| `DIAPHORA_DIR` | Папка с diaphora.py | `C:\Program Files\IDA Pro 9.3\plugins\diaphora-3.4.1` |
-| `DIAPHORA_PYTHON` | Python для diff | `/usr/bin/python3` (по умолч. sys.executable) |
+| Variable | Description | Example |
+|-----------|-------------|---------|
+| `IDAT_PATH` | Full path to idat.exe | `C:\Program Files\IDA Pro 9.3\idat.exe` |
+| `DIAPHORA_DIR` | Folder containing diaphora.py | `C:\Program Files\IDA Pro 9.3\plugins\diaphora-3.4.1` |
+| `DIAPHORA_PYTHON` | Python interpreter for diff | `/usr/bin/python3` (defaults to sys.executable) |
 
-В Claude Code можно задать их в `~/.claude.json`:
+For Claude Code, you can specify them in `~/.claude.json` (or the corresponding config file of your MCP client):
 
 ```json
 {
   "mcpServers": {
     "diaphora": {
       "command": "python",
-      "args": ["путь/к/репе/diaphora_mcp_server.py"],
+      "args": ["path/to/repo/diaphora_mcp_server.py"],
       "env": {
         "IDAT_PATH": "C:\\Program Files\\IDA Pro 9.3\\idat.exe",
         "DIAPHORA_DIR": "C:\\Program Files\\IDA Pro 9.3\\plugins\\diaphora-3.4.1"
@@ -58,170 +60,166 @@ pip install -e .
 }
 ```
 
-### 4. Подготовка баз для диффа
+### 4. Preparing Databases for Diffing
 
-IDA должна проанализировать сравниваемые бинарники (создать .i64 или .idb). После этого:
+IDA Pro must analyze the binaries first (creating `.i64` or `.idb` files). After that:
 
 ```
 ┃ export_idb_to_diaphora(idb_path="old_version.i64")
 ┃ export_idb_to_diaphora(idb_path="new_version.i64")
 ```
 
-Либо одной командой:
+Or run the full pipeline in one command:
 
 ```
 ┃ batch_export_and_diff(idb1="old.i64", idb2="new.i64")
 ```
 
-## Использование
+## Usage
 
-### Быстрый старт
+### Quick Start
 
 ```
-┃ # 1. Полный пайплайн: экспорт двух .i64 → diff → отчёт
+┃ # 1. Full pipeline: export two .i64 → diff → summary report
 ┃ batch_export_and_diff(idb1="v1.0.i64", idb2="v1.1.i64")
-
-┃ # 2. Если базы уже экспортированы
+ 
+┃ # 2. If databases are already exported
 ┃ diff_diaphora_dbs(db1="v1.0.sqlite", db2="v1.1.sqlite")
-
-┃ # 3. Security-анализ результатов
+ 
+┃ # 3. Security analysis of diff results
 ┃ analyze_diff_results(results_path="v1.0_vs_v1.1.diaphora")
-
-┃ # 4. Ранжирование
+ 
+┃ # 4. Importance ranking of changes
 ┃ rank_changes(results_path="v1.0_vs_v1.1.diaphora", top_n=20)
-
-┃ # 5. Поиск корневых изменений
+ 
+┃ # 5. Find root-cause changes
 ┃ find_patch_root(results_path="v1.0_vs_v1.1.diaphora")
-
-┃ # 6. Детектирование security-патчей
+ 
+┃ # 6. Detect probable security patches
 ┃ detect_security_patches(results_path="v1.0_vs_v1.1.diaphora")
-
-┃ # 7. Полный отчёт
+ 
+┃ # 7. Generate full report
 ┃ summarize_patch(results_path="v1.0_vs_v1.1.diaphora")
 ```
 
-### Исследование одной базы
+### Investigating a Single Database
 
 ```
-┃ # Метаданные базы
+┃ # Get database export info
 ┃ get_export_info(db_path="app.sqlite")
-
-┃ # Поиск функций
+ 
+┃ # Search for functions
 ┃ search_export_db(db_path="app.sqlite", name_pattern="%crypt%", min_instructions=50)
-
-┃ # Псевдокод
+ 
+┃ # Retrieve pseudocode
 ┃ get_function_pseudocode(db_path="app.sqlite", address="401000")
 ```
 
-## Структура проекта
+## Project Structure
 
 ```
 diaphora-mcp/
-├── diaphora_mcp_server.py          # Точка входа (22 строки)
+├── diaphora_mcp_server.py          # Main entrypoint
 ├── diaphora_mcp/
-│   ├── diaphora_mcp_server.py      # Регистрация MCP-инструментов
-│   ├── config.py                   # Конфигурация путей (автоопределение)
-│   ├── models.py                   # Разделяемые константы
+│   ├── diaphora_mcp_server.py      # MCP tool registration
+│   ├── config.py                   # Path configuration and auto-detection
+│   ├── models.py                   # Constants and models
 │   ├── core/
-│   │   ├── export.py               # Headless-экспорт, batch pipeline
-│   │   ├── diff.py                 # Диффинг и чтение .diaphora
-│   │   ├── analysis.py             # Поиск, сравнение, объяснение функций
-│   │   ├── security.py             # Keyword matching, детектирование патчей
-│   │   ├── ranking.py              # Ранжирование по важности
-│   │   ├── graph.py                # Call graph, BFS, root cause
-│   │   ├── metadata.py             # Перенос имён/типов/комментариев
-│   │   └── report.py               # Полный отчёт по патчу
+│   │   ├── export.py               # Headless export, batch pipeline
+│   │   ├── diff.py                 # Diffing and .diaphora results reader
+│   │   ├── analysis.py             # Function search, compare, explain
+│   │   ├── security.py             # Keyword matching, patch detection
+│   │   ├── ranking.py              # Importance ranking
+│   │   ├── graph.py                # Callgraph, BFS call trees, root cause
+│   │   ├── metadata.py             # Metadata preparation (names, comments)
+│   │   └── report.py               # Overall patch report generation
 │   └── utils/
-│       ├── sqlite.py               # DB helpers
-│       ├── format.py               # Pseudocode diff, feature extraction
-│       └── log.py                  # Логирование экспортов
-├── _diaphora_headless.py           # Wrapper для idat.exe -S
-└── logs/                           # Логи экспортов (создаётся автоматически)
+│       ├── sqlite.py               # SQLite helpers
+│       ├── format.py               # Pseudocode diff, feature vector extraction
+│       └── log.py                  # Export logging utilities
+├── _diaphora_headless.py           # idat.exe -S thin wrapper
+└── logs/                           # Automated export logs (created dynamically)
 ```
 
-## Все MCP-инструменты (20 шт)
+## MCP Tools Reference (20 tools)
 
 ### Export
-| Инструмент | Описание |
-|-----------|----------|
-| `export_idb_to_diaphora` | Экспорт .i64/.idb в .sqlite через idat.exe |
-| `batch_export_and_diff` | Полный пайплайн: экспорт → экспорт → diff → сводка |
+| Tool | Description |
+|------|-------------|
+| `export_idb_to_diaphora` | Exports `.i64`/`.idb` database to SQLite format using IDA headless |
+| `batch_export_and_diff` | Full pipeline: export primary → export secondary → diff → summary |
 
 ### Diff
-| Инструмент | Описание |
-|-----------|----------|
-| `diff_diaphora_dbs` | Дифф двух экспортированных .sqlite баз |
-| `get_diff_results` | Чтение .diaphora файла с фильтрацией |
-| `get_diff_summary` | Сводка по diff |
+| Tool | Description |
+|------|-------------|
+| `diff_diaphora_dbs` | Diffs two exported Diaphora SQLite databases |
+| `get_diff_results` | Reads `.diaphora` diff file with filtering |
+| `get_diff_summary` | Returns match statistics |
 
 ### Analysis
-| Инструмент | Описание |
-|-----------|----------|
-| `analyze_diff_results` | Security-фильтрация |
-| `compare_functions` | Side-by-side сравнение двух версий функции |
-| `find_function_match` | Поиск соответствия функции между версиями |
-| `explain_similarity` | Разбор факторов сходства |
-| `detect_behavior_change` | NL-описание изменения логики |
-| `summarize_patch` | Полный отчёт по обновлению |
-| `search_export_db` | Поиск функций по имени/размеру/сложности |
-| `get_function_pseudocode` | Псевдокод функции из базы |
-| `get_export_info` | Метаданные базы |
+| Tool | Description |
+|------|-------------|
+| `analyze_diff_results` | Screens results using security keywords and filters |
+| `compare_functions` | Side-by-side comparison of a function in both databases |
+| `find_function_match` | Matches a function in the second binary with confidence metrics |
+| `explain_similarity` | Breaks down similarity factors (mnemonics, CFG, constants, prototype, hash) |
+| `detect_behavior_change` | Provides natural language summary of function logic changes |
+| `summarize_patch` | Produces comprehensive update report |
+| `search_export_db` | Queries exported functions by name/instructions/complexity |
+| `get_function_pseudocode` | Fetches pseudocode and metadata for a function |
+| `get_export_info` | Retrieves general database metadata |
 
 ### Security
-| Инструмент | Описание |
-|-----------|----------|
-| `detect_security_patches` | Детектирование вероятных исправлений безопасности |
+| Tool | Description |
+|------|-------------|
+| `detect_security_patches` | Detects probable security fixes (bounds checks, memory safety, anti-debug, etc.) |
 
 ### Ranking
-| Инструмент | Описание |
-|-----------|----------|
-| `rank_changes` | Ранжирование изменённых функций по важности |
+| Tool | Description |
+|------|-------------|
+| `rank_changes` | Ranks changed functions by importance (0-100 score) |
 
 ### Callgraph
-| Инструмент | Описание |
-|-----------|----------|
-| `get_changed_callgraph` | Сравнение входящих/исходящих вызовов |
-| `compare_call_path` | Сравнение цепочек вызовов (BFS, N уровней) |
-| `find_patch_root` | Определение корневых функций |
+| Tool | Description |
+|------|-------------|
+| `get_changed_callgraph` | Compares incoming and outgoing calls of a function |
+| `compare_call_path` | Walks callgraph from a function (BFS call path comparison, up to N levels) |
+| `find_patch_root` | Detects root-cause functions causing call cascades |
 
 ### Metadata
-| Инструмент | Описание |
-|-----------|----------|
-| `transfer_metadata` | Подготовка данных для переноса имён/комментариев |
+| Tool | Description |
+|------|-------------|
+| `transfer_metadata` | Prepares names, comments, and prototypes for bulk transfer |
 
-## Интеграция с GUI IDA Pro (XML-RPC Мост)
+## IDA Pro GUI Integration (XML-RPC Bridge)
 
-Проект включает в себя встроенную интеграцию с запущенной сессией GUI IDA Pro, что позволяет делать экспорт баз данных мгновенно прямо в открытом окне без конфликтов блокировки файлов.
+The project includes built-in integration with running GUI IDA Pro sessions, enabling instant exports directly from active IDA windows without database locking conflicts.
 
-1. **Автоматический запуск**: Скопируйте файл [diaphora_gui_listener.py](diaphora_gui_listener.py) в папку `plugins/` вашей IDA Pro. Он будет автоматически поднимать XML-RPC сервер на порту `28652` при запуске IDA.
-2. **Умный экспорт**: При вызове `export_idb_to_diaphora` MCP-сервер сначала проверит порт `28652`. Если сессия активна, он сделает экспорт прямо в GUI без открытия сторонних фоновых процессов. В противном случае он автоматически откатится к фоновому headless-режиму (`idat.exe`).
+1. **Auto-start**: Copy [diaphora_gui_listener.py](diaphora_gui_listener.py) to your IDA Pro `plugins/` directory. It will start a background XML-RPC server on port `28652` whenever IDA starts.
+2. **Smart Export**: When calling `export_idb_to_diaphora`, the MCP server checks port `28652`. If a session is active, it runs the export directly in the GUI. Otherwise, it automatically falls back to headless background execution via `idat.exe`.
 
-Подробные инструкции по настройке и запуску моста см. в [GUI_INSTRUCTIONS.md](GUI_INSTRUCTIONS.md).
+For detailed instructions on configuring the bridge, see [GUI_INSTRUCTIONS.md](GUI_INSTRUCTIONS.md).
 
-## Работа с гигантскими базами данных (100k+ функций)
+## Handling Gigantic Databases (100k+ functions)
 
-При работе с очень большими проектами (например, `aces.exe` с 150k+ функциями) Diaphora MCP включает специальные оптимизации:
-- **Лимит рекурсии**: В коде плагина лимит рекурсии Python автоматически поднят до `100000` (`sys.setrecursionlimit`), что предотвращает краш `maximum recursion depth exceeded` на больших графах вызовов.
-- **Оптимизация транзакций SQLite**: В `diaphora_config.py` рекомендуется установить `COMMIT_AFTER_EACH_GUI_UPDATE = False`. Это отключает частые дисковые коммиты при обновлении GUI, ускоряя экспорт в 2-3 раза.
-- **Отключение микрокода**: При работе с огромными базами без декомпилятора рекомендуется отключить экспорт микрокода Hex-Rays (`EXPORTING_USE_MICROCODE = False` в конфиге Diaphora).
+When processing extremely large projects, Diaphora MCP applies specific optimizations:
+- **Recursion Limit**: Python recursion limit is automatically raised to `100000` (`sys.setrecursionlimit`) to prevent crashes during large callgraph traversals.
+- **SQLite Transaction Optimizations**: In your `diaphora_config.py`, setting `COMMIT_AFTER_EACH_GUI_UPDATE = False` reduces disk writes, speeding up GUI export 2x to 3x.
+- **Hex-Rays Microcode**: Disable microcode export (`EXPORTING_USE_MICROCODE = False` in Diaphora config) for a faster export when decompiler is not strictly required.
 
-## IDA Pro MCP интеграция
+## IDA Pro MCP Integration
 
-Инструменты `analyze_diff_results`, `compare_functions`, `find_function_match` и другие возвращают поле `ida_pro_mcp` с адресами и путями к базам. Эти данные можно передавать напрямую в IDA Pro MCP:
+Tools like `analyze_diff_results`, `compare_functions`, and `find_function_match` return an `ida_pro_mcp` block containing addresses and paths. This information can be passed directly to the `ida-pro-mcp` tools:
 
 ```
-┃ # 1. Diaphora находит подозрительную функцию
+┃ # 1. Diaphora finds a suspicious function
 ┃ analyze_diff_results(results_path="diff.diaphora")
 ┃   → addr1="401000", db1="old.sqlite"
-
-┃ # 2. IDA Pro MCP декомпилирует
+ 
+┃ # 2. IDA Pro MCP decompiles it
 ┃ decompile_function(address="401000")
 ```
 
-## Известные проблемы
-
-См. [Problems.md](Problems.md).
-
-## Лицензия
+## License
 
 MIT

@@ -102,6 +102,7 @@ def run_export(
         env = os.environ.copy()
         env["DIAPHORA_AUTO"] = "1"
         env["DIAPHORA_EXPORT_FILE"] = output_path
+        env["DIAPHORA_DIR"] = DIAPHORA_DIR
         if use_decompiler:
             env["DIAPHORA_USE_DECOMPILER"] = "1"
         else:

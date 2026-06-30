@@ -1,104 +1,90 @@
 # Diaphora MCP — Automated Binary Diffing Pipeline
 
-MCP-сервер для автоматизации бинарного диффинга через Diaphora + IDA Pro.
+MCP server for automating binary diffing via Diaphora + IDA Pro.
 
-## Расположение
+## Project Structure and Setup
 
-| Компонент | Путь |
+| Component | Path |
 |-----------|------|
-| MCP-сервер | `diaphora_mcp_server.py` |
-| Headless-wrapper | `_diaphora_headless.py` |
+| MCP Server | `diaphora_mcp_server.py` |
+| Headless wrapper | `_diaphora_headless.py` |
 | GUI Listener Plugin | `diaphora_gui_listener.py` |
-| Diaphora | `D:\Programs\IDA Professional 9.3\plugins\diaphora-3.4.1\` |
-| IDA (idat.exe) | `D:\Programs\IDA Professional 9.3\idat.exe` |
-| IDB-базы | `.i64` / `.idb` файлы (готовятся через IDA Pro GUI или IDAPython) |
-| MCP-конфиг | `C:\Users\olegc\.claude\.mcp.json` |
+| Diaphora Plugin | `<your_ida_path>\plugins\diaphora-3.4.1\` |
+| IDA (idat.exe) | `<your_ida_path>\idat.exe` |
+| IDB databases | `.i64` / `.idb` files |
+| MCP Config | `%USERPROFILE%\.claude\.mcp.json` |
 
-## Доступные инструменты (MCP tools)
+## Available Tools
 
-### Экспорт
-- `export_idb_to_diaphora` — экспорт .i64/.idb в .sqlite через idat.exe (headless)
-- `batch_export_and_diff` — полный пайплайн: экспорт → diff → сводка
+### Export
+- `export_idb_to_diaphora` — Exports `.i64`/`.idb` to SQLite via `idat.exe` (headless)
+- `batch_export_and_diff` — Full pipeline: export primary → export secondary → diff → summary
 
 ### Diff
-- `diff_diaphora_dbs` — дифф двух экспортированных .sqlite баз
-- `get_diff_results` — чтение .diaphora файла с фильтрацией
-- `get_diff_summary` — сводка по diff
+- `diff_diaphora_dbs` — Diffs two exported SQLite databases
+- `get_diff_results` — Reads `.diaphora` file with filtering
+- `get_diff_summary` — Returns match statistics and summaries
 
-### Анализ
-- `analyze_diff_results` — security-фильтрация с keyword-матчингом и IDA Pro MCP интеграцией
-- `compare_functions` — сравнение функции side-by-side из двух баз
-- `search_export_db` — поиск функций по имени/размеру/сложности
-- `get_function_pseudocode` — псевдокод функции из базы
-- `get_export_info` — метаданные базы
+### Analysis
+- `analyze_diff_results` — Security screening and matching
+- `compare_functions` — Side-by-side comparison of a function in both databases
+- `search_export_db` — Queries functions by name/instructions/complexity
+- `get_function_pseudocode` — Retrieves pseudocode + metadata for a function
+- `get_export_info` — Retrieves general database metadata
 
-### Phase 3 — Agent-first tools (высокоуровневые, LLM-ориентированные)
-- `find_function_match` — поиск соответствия функции между двумя версиями с confidence и evidence
-- `transfer_metadata` — подготовка данных для переноса имён/комментариев/прототипов/типов между базами
-- `get_changed_callgraph` — сравнение входящих/исходящих вызовов функции
-- `rank_changes` — ранжирование изменённых функций по важности (CFG, псевдокод, сложность, security)
-- `find_patch_root` — определение корневых функций, вызывающих каскадные изменения
-- `compare_call_path` — сравнение цепочек вызовов (BFS, до N уровней)
-- `detect_security_patches` — детектирование вероятных исправлений безопасности (bounds checks, null checks, crypto, anti-debug, и др.)
-- `detect_behavior_change` — NL-описание изменения логики функции
-- `summarize_patch` — полный отчёт по обновлению с категоризацией
-- `explain_similarity` — разбор факторов сходства (mnemonics, CFG, константы, callgraph, prototype, hash)
+### Agent-first Tools
+- `find_function_match` — Matches a function in the second binary with confidence metrics
+- `transfer_metadata` — Prepares names, comments, and prototypes for bulk transfer
+- `get_changed_callgraph` — Compares incoming and outgoing calls of a function
+- `rank_changes` — Ranks changed functions by importance (0-100 score)
+- `find_patch_root` — Detects root-cause functions causing call cascades
+- `compare_call_path` — Walks callgraph from a function (BFS call path comparison, up to N levels)
+- `detect_security_patches` — Detects probable security fixes (bounds checks, memory safety, anti-debug, etc.)
+- `detect_behavior_change` — Provides natural language summary of function logic changes
+- `summarize_patch` — Produces comprehensive update report
+- `explain_similarity` — Breaks down similarity factors (mnemonics, CFG, constants, prototype, hash)
 
-### IDA Pro MCP интеграция
+## Typical Workflow
 
-Инструменты `analyze_diff_results`, `compare_functions`, `find_function_match`, `detect_security_patches`,
-`detect_behavior_change` и другие возвращают поля `ida_pro_mcp`
-с адресами и путями к базам. Используйте их с IDA Pro MCP инструментами:
-- `decompile_function(address)` — декомпиляция подозрительной функции
-- `get_function_by_address(address)` — инфо о функции
-- `disassemble_function(address)` — листинг ассемблера
-
-## Типовой workflow
-
-```
-# 1. Быстрый diff (если базы уже экспортированы)
+```python
+# 1. Diff already exported databases
 diff_diaphora_dbs(db1="old.sqlite", db2="new.sqlite")
 
-# 2. Полный pipeline (с headless-экспортом)
+# 2. Run full pipeline starting from IDBs
 batch_export_and_diff(idb1="old.i64", idb2="new.i64")
 
-# 3. Security-анализ результатов
+# 3. Analyze diff results for security issues
 analyze_diff_results(results_path="old_vs_new.diaphora")
 
-# 4. Ранжирование по важности
+# 4. Rank changes
 rank_changes(results_path="old_vs_new.diaphora", top_n=20)
 
-# 5. Поиск корневых изменений
+# 5. Locate root changes
 find_patch_root(results_path="old_vs_new.diaphora")
 
-# 6. Детектирование security-патчей
+# 6. Detect security fixes
 detect_security_patches(results_path="old_vs_new.diaphora")
 
-# 7. Углублённое сравнение функции
+# 7. Compare a function side-by-side
 compare_functions(db1="old.sqlite", db2="new.sqlite", address="401000")
 
-# 8. Объяснение сходства
+# 8. Explain function similarity
 explain_similarity(db1="old.sqlite", db2="new.sqlite", address="401000")
 
-# 9. Полный отчёт
+# 9. Get full update report
 summarize_patch(results_path="old_vs_new.diaphora")
 ```
 
-## Правила для Агентов (AI Instructions)
+## Agent Rules (AI Instructions)
 
-- **Ограничение детализации на больших базах**: Если исходный `.i64`/`.idb` файл весит более **100 МБ** или содержит **> 100 000 функций**, вы **ОБЯЗАНЫ** использовать параметр `summaries_only=True` (либо оставить его по умолчанию `None`, чтобы сработал автодетект). Это предотвратит гигантские дампы ассемблера в SQLite, сократит время экспорта с 1.5 часов до **1–2 минут** и уменьшит размер базы с 300+ МБ до 15 МБ.
-- **Использование декомпилятора**: Для больших файлов декомпилятор Hex-Rays **должен быть выключен** (`use_decompiler=False`), иначе экспорт займет более 5 часов.
-- **Работа в summaries_only**: Если база экспортирована в summaries-режиме, детальный ассемблерный diff в SQLite недоступен. Вместо этого используйте MCP-инструменты живой IDA Pro (`ida-pro-mcp`), чтобы направить пользователя к нужному адресу в GUI для ручного просмотра кода.
+- **Limit details on large databases**: If the source `.i64`/`.idb` file is larger than **100 MB** or contains **> 100,000 functions**, you **MUST** use `summaries_only=True` (or leave as `None` to auto-detect). This prevents huge database size bloat, speeds up export time from 1.5 hours to **1-2 minutes**, and reduces SQLite database size from 300+ MB to 15 MB.
+- **Decompiler usage**: For large binaries, the Hex-Rays decompiler **should be turned off** (`use_decompiler=False`), otherwise headless export might take over 5 hours.
+- **Work in summaries_only mode**: In `summaries_only` mode, detailed assembly/pseudocode diff is not stored. Use live IDA Pro MCP tools (`ida-pro-mcp`) to guide the user in the GUI to analyze the target address.
 
-## Важные лимиты и технические детали
+## Technical Details
 
-- **GUI-интеграция (XML-RPC)**: Плагин `diaphora_gui_listener.py` открывает порт `28652` внутри запущенной GUI IDA Pro. Перед запуском `idat.exe` MCP-сервер всегда опрашивает этот порт. Если он доступен, экспорт идет через GUI.
-- **Порты MCP-серверов в IDA Pro**:
-  - `28652` — XML-RPC порт слушателя Diaphora MCP.
-  - `13337` — порт JSON-RPC сервера `ida-pro-mcp` (управление GUI, навигация).
-- **headless export** использует встроенный механизм Diaphora (env vars `DIAPHORA_AUTO`, `DIAPHORA_EXPORT_FILE`, `DIAPHORA_USE_DECOMPILER`, `DIAPHORA_FUNCTION_SUMMARIES_ONLY`).
-- idat.exe запускается через thin wrapper `_diaphora_headless.py` (обходит проблему пробелов в пути `IDA Professional 9.3`).
-- Для экспорта нужен скомпилированный `.i64` или `.idb` — IDA открывает его в headless режиме и экспортирует все функции.
-- Для diff используется `diaphora.py` (system Python, не IDA).
-- **Таймаут экспорта**: Увеличен до 14 400 секунд (4 часа) для поддержки огромных бинарников в детальном режиме. Таймаут diff: 1 час (3600 секунд). Watchdog бездействия диска сработает через 120 секунд.
-- Лимит рекурсии Python автоматически увеличен до `100000` для избежания `maximum recursion depth exceeded`.
+- **GUI Integration (XML-RPC)**: The plugin `diaphora_gui_listener.py` opens port `28652` inside active GUI IDA Pro sessions. The MCP server checks this port first. If alive, the export is executed inside the GUI.
+- **Headless export** uses Diaphora's built-in environment variables (`DIAPHORA_AUTO`, `DIAPHORA_EXPORT_FILE`, `DIAPHORA_USE_DECOMPILER`, `DIAPHORA_FUNCTION_SUMMARIES_ONLY`).
+- `idat.exe` is run via the wrapper script `_diaphora_headless.py`.
+- **Export Timeout**: Set to 14,400 seconds (4 hours) to support large binaries in detailed mode. Diff timeout: 1 hour (3600 seconds). Watchdog disk inactivity check triggers after 120 seconds.
+- Recursion limit is automatically set to `100000` to prevent recursion errors on large call graphs.

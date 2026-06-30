@@ -1,33 +1,35 @@
-# Инструкция по установке и использованию GUI-моста Diaphora MCP
+[Читать на русском языке](GUI_INSTRUCTIONS.ru.md)
 
-GUI-мост позволяет MCP-серверу выполнять экспорт баз данных мгновенно прямо из запущенной и открытой на экране программы IDA Pro, избегая конфликтов блокировки файлов и необходимости закрывать IDA.
+# Installation and Usage Instructions for the Diaphora MCP GUI Bridge
+
+The GUI Bridge allows the MCP server to run database exports instantly from a running, active IDA Pro instance on your screen. This avoids file-locking conflicts and eliminates the need to close IDA.
 
 ---
 
-## Шаг 1. Установка плагина в IDA Pro
+## Step 1. Installing the Plugin in IDA Pro
 
-У вас есть два способа запустить плагин-слушатель в IDA Pro:
+You have two options to run the listener plugin in IDA Pro:
 
-### Вариант А: Автоматический запуск (Рекомендуется)
-Скопируйте созданный файл `diaphora_gui_listener.py` в папку плагинов вашей IDA Pro:
-* Путь к папке: `D:\Programs\IDA Professional 9.3\plugins\`
+### Option A: Automatic Start (Recommended)
+Copy the `diaphora_gui_listener.py` file to your IDA Pro plugins directory:
+* Path: `<IDA_INSTALL_DIR>\plugins\` (e.g. `C:\Program Files\IDA Pro 9.3\plugins\`)
 
-*При каждом запуске IDA Pro плагин будет автоматически запускаться в фоне на порту 28652.*
+*The plugin will run automatically in the background on port 28652 every time IDA Pro starts.*
 
-### Вариант Б: Ручной запуск (Для разового теста)
-1. В открытой GUI IDA Pro нажмите комбинацию клавиш **Alt+F7** (или выберите в меню `File` -> `Script file...`).
-2. Укажите путь к файлу:
-   `D:\scripts\AntigravityProjects\diaphora-mcp\diaphora_gui_listener.py`
-3. В нижней панели Output Window в IDA Pro должна появиться строка:
+### Option B: Manual Start (For one-time testing)
+1. In your active IDA Pro window, press **Alt+F7** (or select `File` -> `Script file...` from the menu).
+2. Select the `diaphora_gui_listener.py` script from the root of this repository:
+   `<DIAPHORA_MCP_REPO_DIR>\diaphora_gui_listener.py`
+3. You should see the following line in the Output Window at the bottom of IDA Pro:
    `[Diaphora MCP] GUI listener active on port 28652`
 
 ---
 
-## Шаг 2. Как проверить работу
+## Step 2. Verifying the Setup
 
-1. Откройте любой проект (например, `aces.exe.i64`) в GUI IDA Pro и запустите плагин-слушатель (если не скопировали его в папку `plugins`).
-2. Попросите Агента экспортировать базу данных:
-   > *«Сделай экспорт для D:\scripts\AntigravityProjects\help\input\aces.exe.i64»*
-3. MCP-сервер обнаружит запущенную сессию, отправит запрос на порт 28652, и в логах вы увидите:
+1. Open any project (e.g., `aces.exe.i64`) in IDA Pro GUI and ensure the listener plugin is active.
+2. Ask your AI Agent to export the database:
+   > *“Export <PATH_TO_YOUR_IDB>\aces.exe.i64”*
+3. The MCP server will detect the running GUI session, forward the request to port 28652, and log:
    `[Diaphora MCP] Active GUI IDA Pro session found! Exporting via GUI...`
-4. Экспорт произойдет прямо в вашей открытой IDA Pro, а результат запишется в SQLite без перезапуска процессов.
+4. The export will execute directly inside your active IDA Pro session, writing the results to SQLite without restarting processes.

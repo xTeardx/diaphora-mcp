@@ -11,7 +11,24 @@ from xmlrpc.server import SimpleXMLRPCServer
 import idaapi
 
 PORT = 28652
-DIAPHORA_DIR = r"D:\Programs\IDA Professional 9.3\plugins\diaphora-3.4.1"
+
+# Auto-detect DIAPHORA_DIR relative to this plugin file if placed in IDA plugins directory
+PLUGINS_DIR = os.path.dirname(os.path.abspath(__file__))
+DIAPHORA_DIR = ""
+
+# Look for any subdirectory containing "diaphora" in plugins
+if os.path.isdir(PLUGINS_DIR):
+    for entry in sorted(os.listdir(PLUGINS_DIR), reverse=True):
+        full = os.path.join(PLUGINS_DIR, entry)
+        if os.path.isdir(full) and "diaphora" in entry.lower():
+            if os.path.isfile(os.path.join(full, "diaphora.py")):
+                DIAPHORA_DIR = full
+                break
+
+# Generic fallback placeholder if not found (user should customize)
+if not DIAPHORA_DIR:
+    DIAPHORA_DIR = r"C:\Path\To\IDA\plugins\diaphora-3.4.1"
+
 
 # Make sure Diaphora module can be imported
 if DIAPHORA_DIR not in sys.path:
