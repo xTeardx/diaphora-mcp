@@ -10,30 +10,25 @@ We will compare two different compiled versions of `sqlite3.dll`:
 
 ---
 
-## 1. Preparing the IDA Pro Databases (.i64)
+## 1. Preparing the Files
 
 1. Create a workspace folder, e.g., `E:\Program Files\IdaPro_projects\test\`.
 2. Copy both DLL files to this folder, renaming them for clarity:
    - Copy Python's DLL as `sqlite3_python.dll`
    - Copy AIMP's DLL as `sqlite3_aimp.dll`
-3. Open both DLLs in IDA Pro to let IDA perform auto-analysis and save the databases (`sqlite3_python.dll.i64` and `sqlite3_aimp.dll.i64`). 
-   *Note: Since you have `ida-pro-mcp` configured, you can simply open them in your active IDA Pro GUI sessions. Alternatively, you can generate them headless via command line:*
-   ```cmd
-   "C:\Program Files\IDA Pro 9.3\idat.exe" -B "E:\Program Files\IdaPro_projects\test\sqlite3_python.dll"
-   "C:\Program Files\IDA Pro 9.3\idat.exe" -B "E:\Program Files\IdaPro_projects\test\sqlite3_aimp.dll"
-   ```
-   This will analyze both DLLs and save `sqlite3_python.dll.i64` and `sqlite3_aimp.dll.i64`.
+
+*Note: You do not need to open IDA Pro or manually generate `.i64` database files first. The Diaphora MCP server supports **full headless mode**. If you pass raw `.dll` or `.exe` files directly, IDA Pro will automatically run headless, perform the auto-analysis, and export the SQLite databases all in one step.*
 
 ---
 
 ## 2. Running the Diff Pipeline
 
-Invoke the `batch_export_and_diff` tool via your MCP client (e.g., Claude Desktop, Gemini Antigravity, cursor):
+Invoke the `batch_export_and_diff` tool via your MCP client (e.g., Claude Desktop, Gemini Antigravity, Cursor) passing the raw `.dll` paths directly:
 
 ```json
 {
-  "idb1_path": "E:\\Program Files\\IdaPro_projects\\test\\sqlite3_python.dll.i64",
-  "idb2_path": "E:\\Program Files\\IdaPro_projects\\test\\sqlite3_aimp.dll.i64",
+  "idb1_path": "E:\\Program Files\\IdaPro_projects\\test\\sqlite3_python.dll",
+  "idb2_path": "E:\\Program Files\\IdaPro_projects\\test\\sqlite3_aimp.dll",
   "use_decompiler": false,
   "summaries_only": false,
   "cleanup": false

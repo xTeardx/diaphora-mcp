@@ -10,30 +10,25 @@
 
 ---
 
-## 1. Подготовка баз данных IDA Pro (.i64)
+## 1. Подготовка файлов
 
 1. Создайте рабочую папку, например, `E:\Program Files\IdaPro_projects\test\`.
 2. Скопируйте туда оба DLL-файла, переименовав их для ясности:
    - Копию из Python назовите `sqlite3_python.dll`
    - Копию из AIMP назовите `sqlite3_aimp.dll`
-3. Откройте обе DLL в IDA Pro, чтобы IDA выполнила автоанализ и сохранила базы данных (`sqlite3_python.dll.i64` и `sqlite3_aimp.dll.i64`).
-   *Примечание: Так как у вас настроен `ida-pro-mcp`, вы можете просто открыть их в ваших активных GUI-сессиях IDA Pro. В качестве альтернативы можно сгенерировать их в фоновом режиме через командную строку:*
-   ```cmd
-   "C:\Program Files\IDA Pro 9.3\idat.exe" -B "E:\Program Files\IdaPro_projects\test\sqlite3_python.dll"
-   "C:\Program Files\IDA Pro 9.3\idat.exe" -B "E:\Program Files\IdaPro_projects\test\sqlite3_aimp.dll"
-   ```
-   Этот процесс проанализирует обе DLL и сохранит файлы `sqlite3_python.dll.i64` и `sqlite3_aimp.dll.i64`.
+
+*Примечание: Вам не нужно открывать IDA Pro вручную или предварительно генерировать файлы баз данных `.i64`. MCP-сервер Diaphora поддерживает **полноценный headless-режим**. Если вы передадите пути к исходным `.dll` или `.exe` напрямую, IDA Pro автоматически запустится в фоновом режиме, проведет автоанализ и экспортирует базы данных SQLite за один шаг.*
 
 ---
 
 ## 2. Запуск пайплайна сравнения (Diff)
 
-Вызовите инструмент `batch_export_and_diff` через вашего MCP-клиента (например, Claude Desktop, Gemini Antigravity, Cursor):
+Вызовите инструмент `batch_export_and_diff` через вашего MCP-клиента (например, Claude Desktop, Gemini Antigravity, Cursor), передав пути к исходным `.dll` файлам:
 
 ```json
 {
-  "idb1_path": "E:\\Program Files\\IdaPro_projects\\test\\sqlite3_python.dll.i64",
-  "idb2_path": "E:\\Program Files\\IdaPro_projects\\test\\sqlite3_aimp.dll.i64",
+  "idb1_path": "E:\\Program Files\\IdaPro_projects\\test\\sqlite3_python.dll",
+  "idb2_path": "E:\\Program Files\\IdaPro_projects\\test\\sqlite3_aimp.dll",
   "use_decompiler": false,
   "summaries_only": false,
   "cleanup": false
