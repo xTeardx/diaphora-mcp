@@ -34,6 +34,18 @@ def run_export(idb_path: str, output_path: str, use_decompiler: bool) -> str | N
     if not os.path.isfile(HEADLESS_WRAPPER):
         return f"Headless wrapper not found at {HEADLESS_WRAPPER}"
 
+    # Check if the database is currently locked by a running GUI instance of IDA
+    try:
+        with open(idb_path, "r+b") as f:
+            pass
+    except OSError:
+        return (
+            f"The database {os.path.basename(idb_path)} is currently locked/active. "
+            f"It is likely open in GUI IDA Pro. Please close it in the GUI first, "
+            f"or manually export it to SQLite from the GUI (File -> Diaphora -> Export) "
+            f"and use the resulting SQLite database."
+        )
+
     with ExportLogger(idb_path, output_path) as log:
         _clean_stale_locks(idb_path, log)
 
