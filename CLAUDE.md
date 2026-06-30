@@ -8,6 +8,7 @@ MCP-сервер для автоматизации бинарного диффи
 |-----------|------|
 | MCP-сервер | `diaphora_mcp_server.py` |
 | Headless-wrapper | `_diaphora_headless.py` |
+| GUI Listener Plugin | `diaphora_gui_listener.py` |
 | Diaphora | `D:\Programs\IDA Professional 9.3\plugins\diaphora-3.4.1\` |
 | IDA (idat.exe) | `D:\Programs\IDA Professional 9.3\idat.exe` |
 | IDB-базы | `.i64` / `.idb` файлы (готовятся через IDA Pro GUI или IDAPython) |
@@ -85,11 +86,13 @@ summarize_patch(results_path="old_vs_new.diaphora")
 
 ## Важно
 
-- **headless export** использует встроенный механизм Diaphora (env vars `DIAPHORA_AUTO`,
-  `DIAPHORA_EXPORT_FILE`, `DIAPHORA_USE_DECOMPILER`).
-- idat.exe запускается через thin wrapper `_diaphora_headless.py` (обходит проблему
-  пробелов в пути `IDA Professional 9.3`).
-- Для экспорта нужен скомпилированный `.i64` или `.idb` — IDA открывает его в headless
-  режиме и экспортирует все функции.
+- **GUI-интеграция (XML-RPC)**: Плагин `diaphora_gui_listener.py` открывает порт `28652` внутри запущенной GUI IDA Pro. Перед запуском `idat.exe` MCP-сервер всегда опрашивает этот порт. Если он доступен, экспорт идет через GUI.
+- **Порты MCP-серверов в IDA Pro**:
+  - `28652` — XML-RPC порт слушателя Diaphora MCP.
+  - `13337` — порт JSON-RPC сервера `ida-pro-mcp` (управление GUI, навигация).
+- **headless export** использует встроенный механизм Diaphora (env vars `DIAPHORA_AUTO`, `DIAPHORA_EXPORT_FILE`, `DIAPHORA_USE_DECOMPILER`).
+- idat.exe запускается через thin wrapper `_diaphora_headless.py` (обходит проблему пробелов в пути `IDA Professional 9.3`).
+- Для экспорта нужен скомпилированный `.i64` или `.idb` — IDA открывает его в headless режиме и экспортирует все функции.
 - Для diff используется `diaphora.py` (system Python, не IDA).
 - Таймаут экспорта: 1 час. Таймаут diff: 10 минут.
+- Лимит рекурсии Python автоматически увеличен до `100000` для избежания `maximum recursion depth exceeded`.

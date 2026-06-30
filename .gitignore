@@ -1,32 +1,32 @@
-# Diaphora MCP — Python workspace
-
-# Python
+# Python compile/cache files
 __pycache__/
 *.py[cod]
-*.egg-info/
-.venv/
+*$py.class
 venv/
-*.egg
+.venv/
+.env
 
-# IDA databases
-*.i64
+# SQLite & Diaphora database files
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-crash
+*.diaphora
+*.temp
+*.copy
+
+# IDA Pro database and lock files
 *.id0
 *.id1
 *.id2
 *.nam
 *.til
+*.asm
+*.log
 
-# Diaphora export / diff artifacts
-*.sqlite
-*.sqlite-crash
-*.diaphora
-
-# Export operation logs
+# Project-specific logs and test artifacts
 logs/
-
-# Claude Code
-.claude/settings.json
-
-# OS
-.DS_Store
-Thumbs.db
+verify_*.py
+test_*.py
+debug_*.py
+.claude/
