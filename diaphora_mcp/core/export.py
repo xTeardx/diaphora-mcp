@@ -8,10 +8,12 @@ and the full export→export→diff→summary pipeline.
 import json
 import os
 import subprocess
-import tempfile
+import threading
+import time
 
 from ..config import IDAT_PATH, DIAPHORA_DIR, HEADLESS_WRAPPER, DIAPHORA_SCRIPT, PYTHON
 from ..utils.sqlite import check_db
+from ..utils.log import ExportLogger
 
 
 # ---------------------------------------------------------------------------
@@ -19,6 +21,9 @@ from ..utils.sqlite import check_db
 # ---------------------------------------------------------------------------
 def run_export(idb_path: str, output_path: str, use_decompiler: bool) -> str | None:
     """Run IDA headless export via idat.exe and the headless wrapper.
+
+    Writes a detailed log to logs/export_<timestamp>.log so the user
+    can track progress in real time.
 
     Returns an error string on failure, or None on success.
     """
@@ -29,51 +34,130 @@ def run_export(idb_path: str, output_path: str, use_decompiler: bool) -> str | N
     if not os.path.isfile(HEADLESS_WRAPPER):
         return f"Headless wrapper not found at {HEADLESS_WRAPPER}"
 
-    env = os.environ.copy()
-    env["DIAPHORA_AUTO"] = "1"
-    env["DIAPHORA_EXPORT_FILE"] = output_path
-    env["DIAPHORA_USE_DECOMPILER"] = "1" if use_decompiler else "0"
+    with ExportLogger(idb_path, output_path) as log:
+        _clean_stale_locks(idb_path, log)
 
-    try:
-        proc = subprocess.run(
-            [IDAT_PATH, "-A", f"-S{HEADLESS_WRAPPER}", idb_path],
-            cwd=DIAPHORA_DIR,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=3600,
-        )
-    except subprocess.TimeoutExpired:
-        return "Export timed out after 3600 s"
-    except FileNotFoundError:
-        return f"idat.exe not found at {IDAT_PATH}"
-    except Exception as exc:
-        return f"Failed to launch IDA headless: {exc}"
+        env = os.environ.copy()
+        env["DIAPHORA_AUTO"] = "1"
+        env["DIAPHORA_EXPORT_FILE"] = output_path
+        env["DIAPHORA_USE_DECOMPILER"] = "1" if use_decompiler else "0"
 
-    crash_file = f"{output_path}-crash"
-    if os.path.isfile(crash_file):
+        wal_path = output_path + "-wal"
+        log.info(f"Launching: {IDAT_PATH} -A -S{HEADLESS_WRAPPER} {os.path.basename(idb_path)}")
+        log.info(f"cwd: {DIAPHORA_DIR}")
+        log.info(f"DIAPHORA_EXPORT_FILE={output_path}")
+        log.info(f"DIAPHORA_USE_DECOMPILER={'1' if use_decompiler else '0'}")
+
         try:
-            os.remove(crash_file)
-        except OSError:
-            pass
-        return (
-            "Export appears to have crashed (crash file still present).\n"
-            f"  idat stdout (last 2K):\n{(proc.stdout or '')[-2048:]}\n"
-            f"  idat stderr (last 2K):\n{(proc.stderr or '')[-2048:]}"
-        )
+            proc = subprocess.Popen(
+                [IDAT_PATH, "-A", f"-S{HEADLESS_WRAPPER}", idb_path],
+                cwd=DIAPHORA_DIR,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except FileNotFoundError:
+            log.error(f"idat.exe not found at {IDAT_PATH}")
+            return f"idat.exe not found at {IDAT_PATH}"
+        except Exception as exc:
+            log.error(f"Failed to launch IDA: {exc}")
+            return f"Failed to launch IDA headless: {exc}"
 
-    if not os.path.isfile(output_path):
-        return (
-            "Export completed but no output file was produced.\n"
-            f"  idat stdout (last 2K):\n{(proc.stdout or '')[-2048:]}\n"
-            f"  idat stderr (last 2K):\n{(proc.stderr or '')[-2048:]}"
-        )
+        # Monitor WAL growth while idat runs
+        stop_monitor = threading.Event()
 
-    db_err = check_db(output_path)
-    if db_err:
-        return f"Export produced invalid database:\n  {db_err}"
+        def monitor_wal():
+            last_size = 0
+            while not stop_monitor.is_set():
+                time.sleep(30)
+                try:
+                    sz = os.path.getsize(wal_path)
+                except OSError:
+                    sz = 0
+                if sz != last_size:
+                    log.log_file_growth(wal_path, "WAL")
+                    last_size = sz
+                if os.path.isfile(output_path + "-crash"):
+                    log.info("  crash-file present (export in progress)")
 
-    return None
+        monitor = threading.Thread(target=monitor_wal, daemon=True)
+        monitor.start()
+
+        try:
+            stdout, stderr = proc.communicate(timeout=3600)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stop_monitor.set()
+            monitor.join(timeout=5)
+            log.error("Export timed out after 3600 s")
+            return "Export timed out after 3600 s"
+        finally:
+            stop_monitor.set()
+            monitor.join(timeout=5)
+
+        crash_file = f"{output_path}-crash"
+        crash_present = os.path.isfile(crash_file)
+        output_exists = os.path.isfile(output_path)
+        has_functions = False
+        if output_exists:
+            has_functions = check_db(output_path) is None
+
+        log.info(f"idat exit code: {proc.returncode}")
+        log.info(f"Output file exists: {output_exists}")
+        log.info(f"Output has functions: {has_functions}")
+        log.info(f"Crash file present: {crash_present}")
+        log.log_subprocess_output(stdout or "", stderr or "")
+
+        # Clean up crash-file artifact if DB is actually valid
+        if crash_present and has_functions:
+            try:
+                os.remove(crash_file)
+                log.info("Removed stale crash-file (DB is valid)")
+                crash_present = False
+            except OSError:
+                pass
+
+        if crash_present and not has_functions:
+            return (
+                "Export appears to have crashed (crash file present, DB empty).\n"
+                f"  idat stdout (last 2K):\n{(stdout or '')[-2048:]}\n"
+                f"  idat stderr (last 2K):\n{(stderr or '')[-2048:]}"
+            )
+
+        if not output_exists:
+            return (
+                "Export completed but no output file was produced.\n"
+                f"  idat stdout (last 2K):\n{(stdout or '')[-2048:]}\n"
+                f"  idat stderr (last 2K):\n{(stderr or '')[-2048:]}"
+            )
+
+        if not has_functions:
+            return (
+                f"Export produced a database with 0 functions at {output_path}.\n"
+                f"  idat stdout (last 2K):\n{(stdout or '')[-2048:]}\n"
+                f"  idat stderr (last 2K):\n{(stderr or '')[-2048:]}"
+            )
+
+        log.info(f"Export OK — {os.path.getsize(output_path)} bytes, functions OK")
+        return None  # success
+
+
+def _clean_stale_locks(idb_path: str, log: ExportLogger):
+    """Remove stale IDB lock files that would prevent idat from restarting."""
+    base = os.path.splitext(idb_path)[0]
+    patterns = [".id0", ".id1", ".id2", ".nam", ".til"]
+    cleaned = 0
+    for ext in patterns:
+        path = base + ext
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+                cleaned += 1
+        except OSError as e:
+            log.warn(f"Could not remove stale lock {os.path.basename(path)}: {e}")
+    if cleaned:
+        log.info(f"Cleaned {cleaned} stale IDB lock file(s)")
 
 
 # ---------------------------------------------------------------------------

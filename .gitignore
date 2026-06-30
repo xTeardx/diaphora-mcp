@@ -21,6 +21,9 @@ venv/
 *.sqlite-crash
 *.diaphora
 
+# Export operation logs
+logs/
+
 # Claude Code
 .claude/settings.json
 

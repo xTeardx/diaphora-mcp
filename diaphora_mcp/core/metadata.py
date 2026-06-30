@@ -55,14 +55,24 @@ def transfer_metadata(
 
     # 1. Function names
     if transfer_names:
-        cur_src.execute(
-            "SELECT address, name, true_name FROM functions "
-            "WHERE name NOT LIKE 'sub_%' AND name != ''"
-        )
+        # Some Diaphora schemas have "true_name" (user-assigned name); fall
+        # back to plain "name" when the column doesn't exist.
+        try:
+            cur_src.execute(
+                "SELECT address, name, true_name FROM functions "
+                "WHERE name NOT LIKE 'sub_%' AND name != ''"
+            )
+            use_true_name = True
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            cur_src.execute(
+                "SELECT address, name FROM functions "
+                "WHERE name NOT LIKE 'sub_%' AND name != ''"
+            )
+            use_true_name = False
         for row in cur_src.fetchall():
             src_addr = row["address"].strip().lower()
             tgt_addr = addr_map.get(src_addr, src_addr)
-            new_name = row["true_name"] or row["name"]
+            new_name = (row["true_name"] if use_true_name else None) or row["name"]
             items.append({
                 "type": "function_name",
                 "source_address": row["address"],
