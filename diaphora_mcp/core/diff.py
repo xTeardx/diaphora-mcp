@@ -20,7 +20,13 @@ from ..models import MATCH_TYPES
 # ---------------------------------------------------------------------------
 # Read results
 # ---------------------------------------------------------------------------
-def read_results(results_path: str, match_type: str = "all", min_ratio: float = 0.0):
+def read_results(
+    results_path: str,
+    match_type: str = "all",
+    min_ratio: float = 0.0,
+    limit: int = 500,
+    unmatched_limit: int = 100,
+):
     """Read a .diaphora results file and return structured data."""
     conn = sqlite3.connect(results_path)
     conn.row_factory = sqlite3.Row
@@ -55,14 +61,18 @@ def read_results(results_path: str, match_type: str = "all", min_ratio: float = 
 
     conn.close()
 
+    res_slice = results[:limit] if (limit is not None and limit > 0) else results
+    unm_slice = unmatched[:unmatched_limit] if (unmatched_limit is not None and unmatched_limit > 0) else unmatched
+
     return {
         "config": config_info,
         "counts": counts,
         "total_matches": len(results),
         "unmatched_count": len(unmatched),
-        "results": results[:500],
-        "truncated": len(results) > 500,
-        "unmatched": unmatched[:100],
+        "results": res_slice,
+        "truncated": len(results) > len(res_slice),
+        "unmatched": unm_slice,
+        "unmatched_truncated": len(unmatched) > len(unm_slice),
     }
 
 
@@ -174,6 +184,8 @@ def get_diff_results(
     results_path: str,
     match_type: str = "all",
     min_ratio: float = 0.0,
+    limit: int = 500,
+    unmatched_limit: int = 100,
 ) -> str:
     """Return matches from a .diaphora results file, optionally filtered."""
     if not os.path.isfile(results_path):
@@ -181,7 +193,9 @@ def get_diff_results(
 
     try:
         return json.dumps(
-            read_results(results_path, match_type, min_ratio), indent=2, default=str
+            read_results(results_path, match_type, min_ratio, limit, unmatched_limit),
+            indent=2,
+            default=str,
         )
     except Exception as exc:
         return json.dumps({"error": f"Error reading results: {exc}"})

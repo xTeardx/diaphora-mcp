@@ -7,6 +7,31 @@ Shared low-level functions for reading Diaphora-exported databases and
 
 import os
 import sqlite3
+import subprocess
+import time
+
+
+def force_delete_file(path: str, retries: int = 3) -> bool:
+    """Safely delete a file on Windows, killing idat.exe if locked."""
+    if not os.path.exists(path):
+        return True
+    for attempt in range(retries):
+        try:
+            os.remove(path)
+            return True
+        except OSError as e:
+            # WinError 32: Sharing violation
+            if getattr(e, "winerror", 0) == 32 or "busy" in str(e).lower():
+                subprocess.run(
+                    ["taskkill", "/f", "/im", "idat.exe"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                time.sleep(0.5)
+            else:
+                raise
+    return not os.path.exists(path)
+
 
 
 def check_db(path: str) -> str | None:

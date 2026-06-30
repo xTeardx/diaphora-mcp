@@ -12,7 +12,7 @@ import threading
 import time
 
 from ..config import IDAT_PATH, DIAPHORA_DIR, HEADLESS_WRAPPER, DIAPHORA_SCRIPT, PYTHON
-from ..utils.sqlite import check_db
+from ..utils.sqlite import check_db, check_db_for_diff, force_delete_file
 from ..utils.log import ExportLogger, OperationLogger
 
 
@@ -64,37 +64,60 @@ def run_export(idb_path: str, output_path: str, use_decompiler: bool) -> str | N
             log.error(f"Failed to launch IDA: {exc}")
             return f"Failed to launch IDA headless: {exc}"
 
-        # Monitor WAL growth while idat runs
-        stop_monitor = threading.Event()
+        # Monitor progress and read outputs asynchronously to avoid PIPE block
+        stdout_chunks = []
+        stderr_chunks = []
 
-        def monitor_wal():
-            last_size = 0
-            while not stop_monitor.is_set():
-                time.sleep(30)
-                try:
-                    sz = os.path.getsize(wal_path)
-                except OSError:
-                    sz = 0
-                if sz != last_size:
-                    log.log_file_growth(wal_path, "WAL")
-                    last_size = sz
-                if os.path.isfile(output_path + "-crash"):
-                    log.info("  crash-file present (export in progress)")
+        def read_pipe(pipe, chunks):
+            try:
+                for line in pipe:
+                    chunks.append(line)
+            except Exception:
+                pass
 
-        monitor = threading.Thread(target=monitor_wal, daemon=True)
-        monitor.start()
+        t_out = threading.Thread(target=read_pipe, args=(proc.stdout, stdout_chunks), daemon=True)
+        t_err = threading.Thread(target=read_pipe, args=(proc.stderr, stderr_chunks), daemon=True)
+        t_out.start()
+        t_err.start()
+
+        timeout_seconds = 3600
+        idle_timeout = 120
+        start_time = time.time()
+        last_size = 0
+        last_change_time = time.time()
 
         try:
-            stdout, stderr = proc.communicate(timeout=3600)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            stop_monitor.set()
-            monitor.join(timeout=5)
-            log.error("Export timed out after 3600 s")
-            return "Export timed out after 3600 s"
+            while proc.poll() is None:
+                if time.time() - start_time > timeout_seconds:
+                    proc.kill()
+                    log.error(f"Export timed out after {timeout_seconds} s")
+                    return f"Export timed out after {timeout_seconds} s"
+
+                current_size = 0
+                if os.path.isfile(output_path):
+                    current_size += os.path.getsize(output_path)
+                if os.path.isfile(wal_path):
+                    current_size += os.path.getsize(wal_path)
+
+                if current_size != last_size:
+                    if last_size != 0:
+                        log.info(f"  Export progress: size increased to {current_size} bytes")
+                    last_size = current_size
+                    last_change_time = time.time()
+                else:
+                    idle_duration = time.time() - last_change_time
+                    if idle_duration > idle_timeout:
+                        if check_db_for_diff(output_path) is None:
+                            log.info("  Watchdog: DB structure is fully valid, but process is hung. Force terminating.")
+                            proc.kill()
+                            break
+
+                time.sleep(5)
         finally:
-            stop_monitor.set()
-            monitor.join(timeout=5)
+            t_out.join(timeout=2)
+            t_err.join(timeout=2)
+            stdout = "".join(stdout_chunks)
+            stderr = "".join(stderr_chunks)
 
         crash_file = f"{output_path}-crash"
         crash_present = os.path.isfile(crash_file)
@@ -169,7 +192,7 @@ def _clean_stale_locks(idb_path: str, log: ExportLogger):
         path = base + ext
         try:
             if os.path.isfile(path):
-                os.remove(path)
+                force_delete_file(path)
                 cleaned += 1
         except OSError as e:
             log.warn(f"Could not remove stale lock {os.path.basename(path)}: {e}")
@@ -251,6 +274,9 @@ def batch_export_and_diff(
     idb2_path: str,
     output_dir: str | None = None,
     use_decompiler: bool = False,
+    cleanup: bool = True,
+    limit: int = 500,
+    unmatched_limit: int = 100,
 ) -> str:
     """Run the full Diaphora pipeline: export → export → diff → summary.
 
@@ -297,102 +323,108 @@ def batch_export_and_diff(
     batch_log.info(f"sqlite2: {sqlite2}")
     batch_log.info(f"diff_out: {diff_out}")
 
-
     step_results = {}
 
-    # Step 1: export primary
-    err = run_export(idb1_path, sqlite1, use_decompiler)
-    if err:
-        batch_log.error(f"Export 1 failed: {err}")
-        batch_log.__exit__(None, None, None)
-        return json.dumps({"error": f"Export of {b1} failed: {err}", "steps": step_results})
-    step_results["export1"] = {
-        "database": b1,
-        "output": sqlite1,
-        "size_bytes": os.path.getsize(sqlite1),
-    }
-    batch_log.info(f"Export 1 OK: {sqlite1} ({os.path.getsize(sqlite1)} bytes)")
-
-    # Step 2: export secondary
-    err = run_export(idb2_path, sqlite2, use_decompiler)
-    if err:
-        batch_log.error(f"Export 2 failed: {err}")
-        batch_log.__exit__(None, None, None)
-        return json.dumps({"error": f"Export of {b2} failed: {err}", "steps": step_results})
-    step_results["export2"] = {
-        "database": b2,
-        "output": sqlite2,
-        "size_bytes": os.path.getsize(sqlite2),
-    }
-    batch_log.info(f"Export 2 OK: {sqlite2} ({os.path.getsize(sqlite2)} bytes)")
-
-    # Step 3: diff
-    batch_log.info("Starting diff...")
     try:
-        proc = subprocess.run(
-            [PYTHON, DIAPHORA_SCRIPT, sqlite1, sqlite2, "-o", diff_out],
-            cwd=DIAPHORA_DIR,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-    except subprocess.TimeoutExpired:
-        batch_log.error("Diff timed out after 600 s")
-        batch_log.__exit__(None, None, None)
-        return json.dumps({"error": "Diff timed out after 600 s", "steps": step_results})
-    except Exception as exc:
-        batch_log.error(f"Diff failed: {exc}")
-        batch_log.__exit__(None, None, None)
-        return json.dumps({"error": f"Diff failed: {exc}", "steps": step_results})
+        # Step 1: export primary
+        err = run_export(idb1_path, sqlite1, use_decompiler)
+        if err:
+            batch_log.error(f"Export 1 failed: {err}")
+            return json.dumps({"error": f"Export of {b1} failed: {err}", "steps": step_results})
+        step_results["export1"] = {
+            "database": b1,
+            "output": sqlite1,
+            "size_bytes": os.path.getsize(sqlite1),
+        }
+        batch_log.info(f"Export 1 OK: {sqlite1} ({os.path.getsize(sqlite1)} bytes)")
 
-    batch_log.info(f"Diff exit code: {proc.returncode}")
-    batch_log.log_subprocess_output(proc.stdout or "", proc.stderr or "")
+        # Step 2: export secondary
+        err = run_export(idb2_path, sqlite2, use_decompiler)
+        if err:
+            batch_log.error(f"Export 2 failed: {err}")
+            return json.dumps({"error": f"Export of {b2} failed: {err}", "steps": step_results})
+        step_results["export2"] = {
+            "database": b2,
+            "output": sqlite2,
+            "size_bytes": os.path.getsize(sqlite2),
+        }
+        batch_log.info(f"Export 2 OK: {sqlite2} ({os.path.getsize(sqlite2)} bytes)")
 
-    if not os.path.isfile(diff_out):
-        batch_log.error("Diff produced no output file")
-        batch_log.__exit__(None, None, None)
+        # Step 3: diff
+        batch_log.info("Starting diff...")
+        try:
+            proc = subprocess.run(
+                [PYTHON, DIAPHORA_SCRIPT, sqlite1, sqlite2, "-o", diff_out],
+                cwd=DIAPHORA_DIR,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            batch_log.error("Diff timed out after 600 s")
+            return json.dumps({"error": "Diff timed out after 600 s", "steps": step_results})
+        except Exception as exc:
+            batch_log.error(f"Diff failed: {exc}")
+            return json.dumps({"error": f"Diff failed: {exc}", "steps": step_results})
+
+        batch_log.info(f"Diff exit code: {proc.returncode}")
+        batch_log.log_subprocess_output(proc.stdout or "", proc.stderr or "")
+
+        if not os.path.isfile(diff_out):
+            batch_log.error("Diff produced no output file")
+            return json.dumps(
+                {
+                    "error": "Diff completed but no output file produced",
+                    "steps": step_results,
+                    "stdout": (proc.stdout or "")[-3000:],
+                    "stderr": (proc.stderr or "")[-3000:],
+                }
+            )
+
+        diff_size = os.path.getsize(diff_out)
+        step_results["diff"] = {
+            "output": diff_out,
+            "size_bytes": diff_size,
+        }
+        batch_log.info(f"Diff output: {diff_out} ({diff_size} bytes)")
+
+        # Step 4: read and return results
+        from .diff import read_results as _read_results
+
+        try:
+            results = _read_results(diff_out, limit=limit, unmatched_limit=unmatched_limit)
+        except Exception as exc:
+            batch_log.error(f"Failed to read diff results: {exc}")
+            return json.dumps({"error": f"Failed to read diff results: {exc}", "steps": step_results})
+
+        batch_log.info(f"Diff results: {results['total_matches']} matches, {results['unmatched_count']} unmatched")
+        
         return json.dumps(
             {
-                "error": "Diff completed but no output file produced",
+                "success": True,
                 "steps": step_results,
-                "stdout": (proc.stdout or "")[-3000:],
-                "stderr": (proc.stderr or "")[-3000:],
-            }
+                "summary": {
+                    "best_matches": results["counts"]["best"],
+                    "partial_matches": results["counts"]["partial"],
+                    "unreliable_matches": results["counts"]["unreliable"],
+                    "multimatches": results["counts"]["multimatch"],
+                    "unmatched_primary": results["unmatched_count"],
+                },
+                "results": results,
+            },
+            indent=2,
+            default=str,
         )
 
-    diff_size = os.path.getsize(diff_out)
-    step_results["diff"] = {
-        "output": diff_out,
-        "size_bytes": diff_size,
-    }
-    batch_log.info(f"Diff output: {diff_out} ({diff_size} bytes)")
+    finally:
+        if cleanup:
+            batch_log.info("Cleaning up temporary SQLite and WAL databases...")
+            for path in [sqlite1, f"{sqlite1}-wal", f"{sqlite1}-shm",
+                         sqlite2, f"{sqlite2}-wal", f"{sqlite2}-shm"]:
+                try:
+                    if os.path.exists(path):
+                        force_delete_file(path)
+                except Exception as e:
+                    batch_log.warn(f"Failed to delete temporary file {path}: {e}")
 
-    # Step 4: read and return results
-    from .diff import read_results as _read_results
-
-    try:
-        results = _read_results(diff_out)
-    except Exception as exc:
-        batch_log.error(f"Failed to read diff results: {exc}")
         batch_log.__exit__(None, None, None)
-        return json.dumps({"error": f"Failed to read diff results: {exc}", "steps": step_results})
-
-    batch_log.info(f"Diff results: {results['total_matches']} matches, {results['unmatched_count']} unmatched")
-    batch_log.__exit__(None, None, None)
-
-    return json.dumps(
-        {
-            "success": True,
-            "steps": step_results,
-            "summary": {
-                "best_matches": results["counts"]["best"],
-                "partial_matches": results["counts"]["partial"],
-                "unreliable_matches": results["counts"]["unreliable"],
-                "multimatches": results["counts"]["multimatch"],
-                "unmatched_primary": results["unmatched_count"],
-            },
-            "results": results,
-        },
-        indent=2,
-        default=str,
-    )
