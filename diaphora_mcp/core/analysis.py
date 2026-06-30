@@ -28,7 +28,8 @@ def search_export_db(
     if err:
         return err_json(err)
 
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -72,6 +73,8 @@ def search_export_db(
 
         cur.execute("SELECT * FROM program")
         program = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
 
     return dumps(
         {
@@ -94,7 +97,8 @@ def get_function_pseudocode(
     if err:
         return err_json(err)
 
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -117,6 +121,8 @@ def get_function_pseudocode(
             return err_json("Provide either address or name")
 
         row = cur.fetchone()
+    finally:
+        conn.close()
 
     if not row:
         return err_json(f"Function not found (address={address}, name={name})")
@@ -130,7 +136,8 @@ def get_export_info(db_path: str) -> str:
     if err:
         return err_json(err)
 
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    try:
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -144,6 +151,8 @@ def get_export_info(db_path: str) -> str:
         # on large databases (instructions can have 10M+ rows)
         cur.execute("SELECT COALESCE(SUM(instructions), 0) FROM functions")
         insn_count = cur.fetchone()[0]
+    finally:
+        conn.close()
 
     return dumps(
         {
@@ -174,7 +183,8 @@ def compare_functions(
         return err_json("Provide either address or name")
 
     def _lookup(db_path, lookup_addr, lookup_name):
-        with sqlite3.connect(db_path) as conn:
+        conn = sqlite3.connect(db_path)
+        try:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
 
@@ -198,6 +208,8 @@ def compare_functions(
 
             row = cur.fetchone()
             return dict(row) if row else None
+        finally:
+            conn.close()
 
     func1 = _lookup(db1_path, address, name)
     if not func1:
@@ -293,7 +305,8 @@ def find_function_match(
     # 3. Bytes hash match
     bh = func1.get("bytes_hash", "")
     if bh:
-        with sqlite3.connect(db2_path) as conn2:
+        conn2 = sqlite3.connect(db2_path)
+        try:
             conn2.row_factory = sqlite3.Row
             cur2 = conn2.cursor()
             cur2.execute("SELECT * FROM functions WHERE bytes_hash = ?", (bh,))
@@ -302,11 +315,14 @@ def find_function_match(
                 if not any(c["address"] == fd["address"] for c, _, _ in candidates):
                     candidates.append((fd, 0.9, "bytes_hash"))
                     strategies.append("bytes_hash")
+        finally:
+            conn2.close()
 
     # 4. Prototype match
     proto = func1.get("prototype", "")
     if proto and len(proto) > 5:
-        with sqlite3.connect(db2_path) as conn2:
+        conn2 = sqlite3.connect(db2_path)
+        try:
             conn2.row_factory = sqlite3.Row
             cur2 = conn2.cursor()
             cur2.execute("SELECT * FROM functions WHERE prototype = ?", (proto,))
@@ -315,10 +331,13 @@ def find_function_match(
                 if not any(c["address"] == fd["address"] for c, _, _ in candidates):
                     candidates.append((fd, 0.7, "prototype"))
                     strategies.append("prototype")
+        finally:
+            conn2.close()
 
     # 5. Heuristic: closest by feature vector
     feat1 = func_features(func1)
-    with sqlite3.connect(db2_path) as conn2:
+    conn2 = sqlite3.connect(db2_path)
+    try:
         conn2.row_factory = sqlite3.Row
         cur2 = conn2.cursor()
         cur2.execute(
@@ -351,6 +370,8 @@ def find_function_match(
             if feat1["prototype"] and feat1["prototype"] == feat2["prototype"]:
                 score += 0.20
             heuristic_candidates.append((fd, score))
+    finally:
+        conn2.close()
 
     heuristic_candidates.sort(key=lambda x: -x[1])
     for fd, sc in heuristic_candidates[:3]:
@@ -363,11 +384,14 @@ def find_function_match(
 
     if not candidates:
         if fname:
-            with sqlite3.connect(db2_path) as conn2:
+            conn2 = sqlite3.connect(db2_path)
+            try:
                 cur2 = conn2.cursor()
                 cur2.execute("SELECT name, address FROM functions WHERE name LIKE ?",
                              (f"%{fname[:16]}%",))
                 similar = [{"name": r[0], "address": r[1]} for r in cur2.fetchall()[:10]]
+            finally:
+                conn2.close()
         else:
             similar = []
         return dumps({

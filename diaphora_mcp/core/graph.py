@@ -206,11 +206,14 @@ def find_patch_root(
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 
-    with sqlite3.connect(results_path) as conn:
+    conn = sqlite3.connect(results_path)
+    try:
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         cur.execute("SELECT * FROM results")
         results = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
 
     if not db1_path or not db2_path:
         return dumps({
@@ -229,7 +232,8 @@ def find_patch_root(
                 addr_to_result[a2n] = r
 
     candidates = []
-    with sqlite3.connect(db2_path) as conn2:
+    conn2 = sqlite3.connect(db2_path)
+    try:
         cur2 = conn2.cursor()
         for addr in changed_addrs:
             cur2.execute(
@@ -278,6 +282,8 @@ def find_patch_root(
                 "root_score": root_score,
                 "is_root_candidate": root_score >= 30 and pct > 0.3,
             })
+    finally:
+        conn2.close()
 
     candidates.sort(key=lambda x: -x["root_score"])
     root_candidates = [c for c in candidates if c["is_root_candidate"]]

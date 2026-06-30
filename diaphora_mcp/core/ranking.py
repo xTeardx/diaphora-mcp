@@ -55,13 +55,16 @@ def rank_changes(
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 
-    with sqlite3.connect(results_path) as conn:
+    conn = sqlite3.connect(results_path)
+    try:
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         cur.execute("SELECT * FROM results")
         all_rows = [dict(r) for r in cur.fetchall()]
         cur.execute("SELECT * FROM config")
         config_info = dict(cur.fetchone() or {})
+    finally:
+        conn.close()
 
     ranked = []
 

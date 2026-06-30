@@ -24,18 +24,16 @@ def summarize_patch(
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 
-    with sqlite3.connect(results_path) as conn:
+    conn = sqlite3.connect(results_path)
+    try:
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
-        cur.execute("SELECT * FROM config")
-        config_info = dict(cur.fetchone() or {})
-
-        cur.execute("SELECT * FROM results")
-        results = [dict(r) for r in cur.fetchall()]
-
-        cur.execute("SELECT * FROM unmatched")
-        unmatched = [dict(r) for r in cur.fetchall()]
+        config_info = dict(cur.execute("SELECT * FROM config").fetchone() or {})
+        results = [dict(r) for r in cur.execute("SELECT * FROM results").fetchall()]
+        unmatched = [dict(r) for r in cur.execute("SELECT * FROM unmatched").fetchall()]
+    finally:
+        conn.close()
 
     # Statistics
     total = len(results)
@@ -75,22 +73,28 @@ def summarize_patch(
     prog1 = prog2 = {}
     if db1_path:
         try:
-            with sqlite3.connect(db1_path) as conn1:
+            conn1 = sqlite3.connect(db1_path)
+            try:
                 cur1 = conn1.cursor()
                 cur1.execute("SELECT * FROM program")
                 row = cur1.fetchone()
                 if row:
                     prog1 = dict(zip([d[0] for d in cur1.description], row))
+            finally:
+                conn1.close()
         except Exception:
             pass
     if db2_path:
         try:
-            with sqlite3.connect(db2_path) as conn2:
+            conn2 = sqlite3.connect(db2_path)
+            try:
                 cur2 = conn2.cursor()
                 cur2.execute("SELECT * FROM program")
                 row = cur2.fetchone()
                 if row:
                     prog2 = dict(zip([d[0] for d in cur2.description], row))
+            finally:
+                conn2.close()
         except Exception:
             pass
 

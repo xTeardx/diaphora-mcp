@@ -62,16 +62,15 @@ def analyze_diff_results(
     if not os.path.isfile(results_path):
         return err_json(f"Results file not found: {results_path}")
 
-    with sqlite3.connect(results_path) as conn:
+    conn = sqlite3.connect(results_path)
+    try:
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
-        cur.execute("SELECT * FROM config")
-        config_info = dict(cur.fetchone() or {})
+        config_info = dict(cur.execute("SELECT * FROM config").fetchone() or {})
 
         try:
-            cur.execute("SELECT * FROM matching_databases")
-            databases = [dict(r) for r in cur.fetchall()]
+            databases = [dict(r) for r in cur.execute("SELECT * FROM matching_databases").fetchall()]
         except (sqlite3.OperationalError, sqlite3.DatabaseError):
             databases = []
 
@@ -79,8 +78,18 @@ def analyze_diff_results(
         db2_path = config_info.get("diff_db") or config_info.get("secondary_database", "")
 
         # Read all results from the .diaphora file directly
-        cur.execute("SELECT * FROM results")
-        all_results = [dict(r) for r in cur.fetchall()]
+        all_results = [dict(r) for r in cur.execute("SELECT * FROM results").fetchall()]
+
+        # Read type counts and unmatched upfront so we can close the connection
+        cur.execute(
+            """SELECT type, count(*) as cnt
+               FROM results GROUP BY type"""
+        )
+        type_counts = {r["type"]: r["cnt"] for r in cur.fetchall()}
+
+        unmatched = [dict(r) for r in cur.execute("SELECT * FROM unmatched").fetchall()]
+    finally:
+        conn.close()
 
     # Batch-load function details from underlying databases
     addrs1 = [r.get("address", "") for r in all_results]
@@ -161,14 +170,7 @@ def analyze_diff_results(
 
         matches.append(entry)
 
-    cur.execute(
-        """SELECT type, count(*) as cnt
-           FROM results GROUP BY type"""
-    )
-    type_counts = {r["type"]: r["cnt"] for r in cur.fetchall()}
 
-    cur.execute("SELECT * FROM unmatched")
-    unmatched = [dict(r) for r in cur.fetchall()]
 
     return dumps(
         {
@@ -215,11 +217,14 @@ def detect_security_patches(
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 
-    with sqlite3.connect(results_path) as conn:
+    conn = sqlite3.connect(results_path)
+    try:
         conn.row_factory = sqlite3.Row
         cur = conn.conn.cursor() if hasattr(conn, "conn") else conn.cursor()
         cur.execute("SELECT * FROM results")
         results = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
 
     from ..utils.format import pseudocode_simple_diff
 

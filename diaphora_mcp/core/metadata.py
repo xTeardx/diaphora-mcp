@@ -39,15 +39,19 @@ def transfer_metadata(
     # Build address mapping
     addr_map = {}
     if match_results_path and os.path.isfile(match_results_path):
-        with sqlite3.connect(match_results_path) as conn:
+        conn = sqlite3.connect(match_results_path)
+        try:
             cur = conn.cursor()
             cur.execute("SELECT address, address2 FROM results")
             for src, tgt in cur.fetchall():
                 addr_map[norm_addr(src)] = norm_addr(tgt)
+        finally:
+            conn.close()
 
     items = []
 
-    with sqlite3.connect(source_db_path) as conn_src:
+    conn_src = sqlite3.connect(source_db_path)
+    try:
         conn_src.row_factory = sqlite3.Row
         cur_src = conn_src.cursor()
 
@@ -127,6 +131,8 @@ def transfer_metadata(
                     "value": (row["value"] or "")[:1000],
                     "auto_apply": f"declare_c_type(\"{row['name']}: {row['value'][:80]}\")",
                 })
+    finally:
+        conn_src.close()
 
     return dumps({
         "total_items": len(items),

@@ -30,7 +30,8 @@ def read_results(
     unmatched_limit: int = 100,
 ):
     """Read a .diaphora results file and return structured data."""
-    with sqlite3.connect(results_path) as conn:
+    conn = sqlite3.connect(results_path)
+    try:
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -60,6 +61,8 @@ def read_results(
 
         cur.execute("SELECT * FROM unmatched")
         unmatched = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
 
     res_slice = results[:limit] if (limit is not None and limit > 0) else results
     unm_slice = unmatched[:unmatched_limit] if (unmatched_limit is not None and unmatched_limit > 0) else unmatched
@@ -178,13 +181,16 @@ def diff_diaphora_dbs(
 
         # Read result stats for the log
         try:
-            with sqlite3.connect(output_path) as conn:
+            conn = sqlite3.connect(output_path)
+            try:
                 cur = conn.cursor()
                 cur.execute("SELECT type, count(*) FROM results GROUP BY type")
                 counts = dict(cur.fetchall())
                 log.info(f"Matches: {counts}")
                 cur.execute("SELECT count(*) FROM unmatched")
                 log.info(f"Unmatched: {cur.fetchone()[0]}")
+            finally:
+                conn.close()
         except Exception:
             pass
 
@@ -215,7 +221,8 @@ def get_diff_summary(results_path: str) -> str:
     if not os.path.isfile(results_path):
         return err_json(f"Results file not found: {results_path}")
 
-    with sqlite3.connect(results_path) as conn:
+    conn = sqlite3.connect(results_path)
+    try:
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -243,6 +250,8 @@ def get_diff_summary(results_path: str) -> str:
 
         cur.execute("SELECT type, count(*) FROM unmatched GROUP BY type")
         unmatched = [dict(zip(["type", "count"], r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
 
     return dumps(
         {
