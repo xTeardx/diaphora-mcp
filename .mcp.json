@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "diaphora": {
+      "command": "C:\\Users\\olegc\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "args": [
+        "D:\\scripts\\AntigravityProjects\\diaphora-mcp\\diaphora_mcp_server.py"
+      ]
+    }
+  }
+}

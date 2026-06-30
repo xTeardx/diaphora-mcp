@@ -1,0 +1,29 @@
+# Diaphora MCP — Python workspace
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.egg
+
+# IDA databases
+*.i64
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+
+# Diaphora export / diff artifacts
+*.sqlite
+*.sqlite-crash
+*.diaphora
+
+# Claude Code
+.claude/settings.json
+
+# OS
+.DS_Store
+Thumbs.db
