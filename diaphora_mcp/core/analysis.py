@@ -171,6 +171,8 @@ def compare_functions(
     db2_path: str,
     address: str = "",
     name: str = "",
+    address2: str = "",
+    name2: str = "",
 ) -> str:
     """Retrieve a function's data from both databases for side-by-side comparison."""
     err1 = check_db(db1_path)
@@ -216,7 +218,7 @@ def compare_functions(
     if not func1:
         return err_json(f"Function not found in primary database (address={address}, name={name})")
 
-    func2 = _lookup(db2_path, address, name)
+    func2 = _lookup(db2_path, address2 or address, name2 or name)
     if not func2:
         return dumps(
             {
@@ -461,6 +463,8 @@ def explain_similarity(
     db2_path: str,
     address: str = "",
     name: str = "",
+    address2: str = "",
+    name2: str = "",
 ) -> str:
     """Compare two matched functions and explain the similarity score."""
     err1 = check_db(db1_path)
@@ -473,21 +477,38 @@ def explain_similarity(
     if not address and not name:
         return json.dumps({"error": "Provide either address or name"})
 
-    if not address and name:
+    # Resolve address1 (primary database)
+    address1 = address
+    if not address1 and name:
         f1 = get_func(db1_path, name=name)
         if f1:
-            address = f1["address"]
+            address1 = f1["address"]
 
-    if not address:
-        return json.dumps({"error": "Could not resolve address"})
+    if not address1:
+        return json.dumps({"error": "Could not resolve address in primary database"})
 
-    f1 = get_func(db1_path, address=address)
+    # Resolve address2 (secondary database)
+    address2_resolved = address2
+    if not address2_resolved:
+        if name2:
+            f2 = get_func(db2_path, name=name2)
+            if f2:
+                address2_resolved = f2["address"]
+        else:
+            if name:
+                f2 = get_func(db2_path, name=name)
+                if f2:
+                    address2_resolved = f2["address"]
+            if not address2_resolved:
+                address2_resolved = address1
+
+    f1 = get_func(db1_path, address=address1)
     if not f1:
-        return json.dumps({"error": f"Function at 0x{address} not found in db1"})
+        return json.dumps({"error": f"Function at 0x{address1} not found in db1"})
 
-    f2 = get_func(db2_path, address=address)
+    f2 = get_func(db2_path, address=address2_resolved)
     if not f2:
-        return json.dumps({"error": f"Function at 0x{address} not found in db2"})
+        return json.dumps({"error": f"Function at 0x{address2_resolved} not found in db2"})
 
     features1 = func_features(f1)
     features2 = func_features(f2)
@@ -544,8 +565,8 @@ def explain_similarity(
     })
 
     # 5. Callgraph similarity
-    cg1 = get_callgraph(db1_path, address)
-    cg2 = get_callgraph(db2_path, address)
+    cg1 = get_callgraph(db1_path, address1)
+    cg2 = get_callgraph(db2_path, address2_resolved)
     ce1 = set(cg1["callees"])
     ce2 = set(cg2["callees"])
     callee_sim = len(ce1 & ce2) / max(len(ce1 | ce2), 1) if (ce1 or ce2) else 0
@@ -626,6 +647,8 @@ def detect_behavior_change(
     db2_path: str,
     address: str = "",
     name: str = "",
+    address2: str = "",
+    name2: str = "",
 ) -> str:
     """Analyse a single function across two versions and describe what behaviour changed."""
     err1 = check_db(db1_path)
@@ -638,23 +661,40 @@ def detect_behavior_change(
     if not address and not name:
         return err_json("Provide either address or name")
 
-    if not address and name:
+    # Resolve address1 (primary database)
+    address1 = address
+    if not address1 and name:
         f1 = get_func(db1_path, name=name)
         if f1:
-            address = f1["address"]
+            address1 = f1["address"]
         else:
             return err_json(f"Function '{name}' not found in db1")
 
-    f1 = get_func(db1_path, address=address)
-    f2 = get_func(db2_path, address=address)
+    # Resolve address2 (secondary database)
+    address2_resolved = address2
+    if not address2_resolved:
+        if name2:
+            f2 = get_func(db2_path, name=name2)
+            if f2:
+                address2_resolved = f2["address"]
+        else:
+            if name:
+                f2 = get_func(db2_path, name=name)
+                if f2:
+                    address2_resolved = f2["address"]
+            if not address2_resolved:
+                address2_resolved = address1
+
+    f1 = get_func(db1_path, address=address1)
+    f2 = get_func(db2_path, address=address2_resolved)
 
     if not f1 and not f2:
-        return err_json(f"Function 0x{address} not found in either database")
+        return err_json(f"Function 0x{address1} / 0x{address2_resolved} not found in either database")
 
     if not f1:
         return dumps({
             "change_type": "new_function",
-            "address": address,
+            "address": address2_resolved,
             "function_new": {
                 "name": f2.get("name", ""),
                 "instructions": f2.get("instructions", 0),
@@ -666,7 +706,7 @@ def detect_behavior_change(
     if not f2:
         return dumps({
             "change_type": "deleted_function",
-            "address": address,
+            "address": address1,
             "function_old": {
                 "name": f1.get("name", ""),
                 "instructions": f1.get("instructions", 0),
@@ -684,8 +724,8 @@ def detect_behavior_change(
     added_count = sum(1 for d in pseudo_diff if d["type"] == "added")
     removed_count = sum(1 for d in pseudo_diff if d["type"] == "removed")
 
-    cg1 = get_callgraph(db1_path, address)
-    cg2 = get_callgraph(db2_path, address)
+    cg1 = get_callgraph(db1_path, address1)
+    cg2 = get_callgraph(db2_path, address2_resolved)
     added_callees = set(cg2["callees"]) - set(cg1["callees"])
     removed_callees = set(cg1["callees"]) - set(cg2["callees"])
 
@@ -759,7 +799,7 @@ def detect_behavior_change(
     return dumps({
         "function_name_old": name1,
         "function_name_new": name2,
-        "address": address,
+        "address": address1,
         "change_type": "modified",
         "changes": changes,
         "description": "; ".join(changes) if changes else "Minor or no detectable change",
@@ -780,7 +820,7 @@ def detect_behavior_change(
         "ida_pro_mcp": {
             "db1": db1_path,
             "db2": db2_path,
-            "addr1": address,
-            "addr2": address,
+            "addr1": address1,
+            "addr2": address2_resolved,
         },
     })
