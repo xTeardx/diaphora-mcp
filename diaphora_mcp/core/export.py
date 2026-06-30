@@ -13,7 +13,7 @@ import time
 
 from ..config import IDAT_PATH, DIAPHORA_DIR, HEADLESS_WRAPPER, DIAPHORA_SCRIPT, PYTHON
 from ..utils.sqlite import check_db
-from ..utils.log import ExportLogger
+from ..utils.log import ExportLogger, OperationLogger
 
 
 # ---------------------------------------------------------------------------
@@ -222,8 +222,23 @@ def batch_export_and_diff(
     but this SIGNIFICANTLY increases export time for large binaries.
     Default is False for a fast pipeline run.
     """
+    b1 = os.path.splitext(os.path.basename(idb1_path))[0]
+    b2 = os.path.splitext(os.path.basename(idb2_path))[0]
+
+    sqlite1 = os.path.join(output_dir, f"{b1}.sqlite")
+    sqlite2 = os.path.join(output_dir, f"{b2}.sqlite")
+    diff_out = os.path.join(output_dir, f"{b1}_vs_{b2}.diaphora")
+
+    # Batch-level log
+    batch_log = OperationLogger(
+        f"Batch pipeline: {b1} + {b2}",
+        tag="batch"
+    )
+    batch_log.__enter__()
+
     for p, label in [(idb1_path, "idb1"), (idb2_path, "idb2")]:
         if not os.path.isfile(p):
+            batch_log.__exit__(None, None, None)
             return json.dumps({"error": f"{label} not found: {p}"})
 
     if use_decompiler:
@@ -235,36 +250,44 @@ def batch_export_and_diff(
     else:
         log_warn = None
 
-    b1 = os.path.splitext(os.path.basename(idb1_path))[0]
-    b2 = os.path.splitext(os.path.basename(idb2_path))[0]
+    batch_log.info(f"idb1: {idb1_path}")
+    batch_log.info(f"idb2: {idb2_path}")
+    batch_log.info(f"use_decompiler: {use_decompiler}")
+    batch_log.info(f"sqlite1: {sqlite1}")
+    batch_log.info(f"sqlite2: {sqlite2}")
+    batch_log.info(f"diff_out: {diff_out}")
 
-    sqlite1 = os.path.join(output_dir, f"{b1}.sqlite")
-    sqlite2 = os.path.join(output_dir, f"{b2}.sqlite")
-    diff_out = os.path.join(output_dir, f"{b1}_vs_{b2}.diaphora")
 
     step_results = {}
 
     # Step 1: export primary
     err = run_export(idb1_path, sqlite1, use_decompiler)
     if err:
+        batch_log.error(f"Export 1 failed: {err}")
+        batch_log.__exit__(None, None, None)
         return json.dumps({"error": f"Export of {b1} failed: {err}", "steps": step_results})
     step_results["export1"] = {
         "database": b1,
         "output": sqlite1,
         "size_bytes": os.path.getsize(sqlite1),
     }
+    batch_log.info(f"Export 1 OK: {sqlite1} ({os.path.getsize(sqlite1)} bytes)")
 
     # Step 2: export secondary
     err = run_export(idb2_path, sqlite2, use_decompiler)
     if err:
+        batch_log.error(f"Export 2 failed: {err}")
+        batch_log.__exit__(None, None, None)
         return json.dumps({"error": f"Export of {b2} failed: {err}", "steps": step_results})
     step_results["export2"] = {
         "database": b2,
         "output": sqlite2,
         "size_bytes": os.path.getsize(sqlite2),
     }
+    batch_log.info(f"Export 2 OK: {sqlite2} ({os.path.getsize(sqlite2)} bytes)")
 
     # Step 3: diff
+    batch_log.info("Starting diff...")
     try:
         proc = subprocess.run(
             [PYTHON, DIAPHORA_SCRIPT, sqlite1, sqlite2, "-o", diff_out],
@@ -274,11 +297,20 @@ def batch_export_and_diff(
             timeout=600,
         )
     except subprocess.TimeoutExpired:
+        batch_log.error("Diff timed out after 600 s")
+        batch_log.__exit__(None, None, None)
         return json.dumps({"error": "Diff timed out after 600 s", "steps": step_results})
     except Exception as exc:
+        batch_log.error(f"Diff failed: {exc}")
+        batch_log.__exit__(None, None, None)
         return json.dumps({"error": f"Diff failed: {exc}", "steps": step_results})
 
+    batch_log.info(f"Diff exit code: {proc.returncode}")
+    batch_log.log_subprocess_output(proc.stdout or "", proc.stderr or "")
+
     if not os.path.isfile(diff_out):
+        batch_log.error("Diff produced no output file")
+        batch_log.__exit__(None, None, None)
         return json.dumps(
             {
                 "error": "Diff completed but no output file produced",
@@ -288,10 +320,12 @@ def batch_export_and_diff(
             }
         )
 
+    diff_size = os.path.getsize(diff_out)
     step_results["diff"] = {
         "output": diff_out,
-        "size_bytes": os.path.getsize(diff_out),
+        "size_bytes": diff_size,
     }
+    batch_log.info(f"Diff output: {diff_out} ({diff_size} bytes)")
 
     # Step 4: read and return results
     from .diff import read_results as _read_results
@@ -299,7 +333,12 @@ def batch_export_and_diff(
     try:
         results = _read_results(diff_out)
     except Exception as exc:
+        batch_log.error(f"Failed to read diff results: {exc}")
+        batch_log.__exit__(None, None, None)
         return json.dumps({"error": f"Failed to read diff results: {exc}", "steps": step_results})
+
+    batch_log.info(f"Diff results: {results['total_matches']} matches, {results['unmatched_count']} unmatched")
+    batch_log.__exit__(None, None, None)
 
     return json.dumps(
         {

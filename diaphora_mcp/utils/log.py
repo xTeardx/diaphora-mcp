@@ -26,7 +26,7 @@ def get_log_dir() -> str:
     if _LOG_DIR:
         d = _LOG_DIR
     else:
-        # Project root = diaphora_mcp/../  (two levels up from utils/log.py)
+        # Project root = two levels up from utils/log.py
         d = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
             "logs",
@@ -39,8 +39,8 @@ def _ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def log_path(tag: str = "export") -> str:
-    """Return a path like logs/export_2025-06-30_15-30-00.log."""
+def log_path(tag: str = "operation") -> str:
+    """Return a path like logs/operation_2025-06-30_15-30-00.log."""
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     return os.path.join(get_log_dir(), f"{tag}_{ts}.log")
 
@@ -51,7 +51,7 @@ def write_log(path: str, level: str, message: str):
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"[{_ts()}] [{level}] {message}\n")
     except OSError:
-        pass  # best-effort
+        pass
 
 
 def write_log_lines(path: str, level: str, lines: list[str]):
@@ -62,7 +62,6 @@ def write_log_lines(path: str, level: str, lines: list[str]):
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"[{_ts()}] [{level}] --- begin ---\n")
             for line in lines:
-                # Strip trailing newlines, re-indent
                 clean = line.rstrip("\n\r")
                 f.write(f"  | {clean}\n")
             f.write(f"[{_ts()}] [{level}] --- end ({len(lines)} lines) ---\n")
@@ -70,22 +69,19 @@ def write_log_lines(path: str, level: str, lines: list[str]):
         pass
 
 
-class ExportLogger:
-    """Context manager that writes a structured log for one export operation."""
+# ---------------------------------------------------------------------------
+# OperationLogger — generic context manager for any long operation
+# ---------------------------------------------------------------------------
+class OperationLogger:
+    """Context manager that writes a structured log for a long operation."""
 
-    def __init__(self, idb_path: str, output_path: str, tag: str = "export"):
-        self.idb_path = idb_path
-        self.output_path = output_path
-        self.log_path = log_path(tag)
+    def __init__(self, operation: str, tag: str = None):
+        self.operation = operation
+        self.log_path = log_path(tag or operation.lower().replace(" ", "_"))
         self.start_time = time.time()
 
     def __enter__(self):
-        write_log(
-            self.log_path, "START",
-            f"Export {os.path.basename(self.idb_path)} → {os.path.basename(self.output_path)}",
-        )
-        write_log(self.log_path, "INFO", f"  Full IDB path: {self.idb_path}")
-        write_log(self.log_path, "INFO", f"  Output path:   {self.output_path}")
+        write_log(self.log_path, "START", self.operation)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -117,3 +113,19 @@ class ExportLogger:
             self.info(f"  {label}: {sz // 1024 // 1024} MB ({sz} bytes)")
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# ExportLogger — convenience for export operations (kept for backward compat)
+# ---------------------------------------------------------------------------
+class ExportLogger(OperationLogger):
+    """Context manager for one headless export operation."""
+
+    def __init__(self, idb_path: str, output_path: str, tag: str = "export"):
+        desc = f"Export {os.path.basename(idb_path)} → {os.path.basename(output_path)}"
+        super().__init__(desc, tag=tag)
+        self.idb_path = idb_path
+        self.output_path = output_path
+        # Re-write START with full paths
+        write_log(self.log_path, "INFO", f"  Full IDB path: {idb_path}")
+        write_log(self.log_path, "INFO", f"  Output path:   {output_path}")

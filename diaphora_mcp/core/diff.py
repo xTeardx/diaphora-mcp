@@ -9,9 +9,11 @@ import json
 import os
 import sqlite3
 import subprocess
+import time
 
 from ..config import DIAPHORA_SCRIPT, DIAPHORA_DIR, PYTHON
 from ..utils.sqlite import check_db
+from ..utils.log import OperationLogger, log_path, write_log
 from ..models import MATCH_TYPES
 
 
@@ -87,7 +89,15 @@ def diff_diaphora_dbs(
             os.path.dirname(db1_path), f"{b1}_vs_{b2}.diaphora"
         )
 
+    desc = f"Diff {os.path.basename(db1_path)} vs {os.path.basename(db2_path)}"
+    log = OperationLogger(desc, tag="diff")
+    log.__enter__()
+    log.info(f"  db1: {db1_path}")
+    log.info(f"  db2: {db2_path}")
+    log.info(f"  out: {output_path}")
+
     try:
+        start = time.time()
         proc = subprocess.run(
             [PYTHON, DIAPHORA_SCRIPT, db1_path, db2_path, "-o", output_path],
             cwd=DIAPHORA_DIR,
@@ -95,14 +105,25 @@ def diff_diaphora_dbs(
             text=True,
             timeout=600,
         )
+        elapsed = time.time() - start
+        log.info(f"diaphora.py exit code: {proc.returncode} ({elapsed:.0f}s)")
+        log.log_subprocess_output(proc.stdout or "", proc.stderr or "")
     except subprocess.TimeoutExpired:
+        log.error("Diaphora diff timed out after 600 s")
+        log.__exit__(None, None, None)
         return json.dumps({"error": "Diaphora diff timed out after 600 s"})
     except FileNotFoundError:
+        log.error(f"diaphora.py not found at {DIAPHORA_SCRIPT}")
+        log.__exit__(None, None, None)
         return json.dumps({"error": f"diaphora.py not found at {DIAPHORA_SCRIPT}"})
     except Exception as exc:
+        log.error(f"Failed to launch Diaphora: {exc}")
+        log.__exit__(None, None, None)
         return json.dumps({"error": f"Failed to launch Diaphora: {exc}"})
 
     if not os.path.isfile(output_path):
+        log.error("No output file produced")
+        log.__exit__(None, None, None)
         return json.dumps(
             {
                 "error": "Diaphora completed but did not produce an output file",
@@ -111,6 +132,23 @@ def diff_diaphora_dbs(
             }
         )
 
+    out_size = os.path.getsize(output_path)
+    log.info(f"Output created: {out_size} bytes")
+
+    # Read result stats for the log
+    try:
+        conn = sqlite3.connect(output_path)
+        cur = conn.cursor()
+        cur.execute("SELECT type, count(*) FROM results GROUP BY type")
+        counts = dict(cur.fetchall())
+        log.info(f"Matches: {counts}")
+        cur.execute("SELECT count(*) FROM unmatched")
+        log.info(f"Unmatched: {cur.fetchone()[0]}")
+        conn.close()
+    except Exception:
+        pass
+
+    log.__exit__(None, None, None)
     return json.dumps(read_results(output_path), indent=2, default=str)
 
 
