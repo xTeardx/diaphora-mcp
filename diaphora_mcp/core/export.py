@@ -367,7 +367,7 @@ async def batch_export_and_diff(
     output_dir: str | None = None,
     use_decompiler: bool = False,
     summaries_only: bool | None = None,
-    cleanup: bool = True,
+    cleanup: bool = False,
     limit: int = 500,
     unmatched_limit: int = 100,
 ) -> str:
@@ -380,6 +380,12 @@ async def batch_export_and_diff(
     When `summaries_only=True`, exports skip detailed assembly/pseudocode and
     only store function summaries — much faster for large binaries.
     When `None` (default), auto-detects based on .i64/.idb file size (>100 MB).
+
+    The intermediate .sqlite export databases are kept by default (cleanup=False)
+    because downstream tools — explain_similarity, rank_changes,
+    detect_behavior_change, compare_functions, search_export_db, etc. — all
+    require them to do per-function analysis. Set cleanup=True only if you
+    are sure you won't need any per-function drill-down after this call.
     """
     b1 = os.path.splitext(os.path.basename(idb1_path))[0]
     b2 = os.path.splitext(os.path.basename(idb2_path))[0]
