@@ -216,6 +216,7 @@ def _export_diaphora(
     output_path: str,
     opts: dict,
     progress: "idaapi.timeldk_progress_t | None" = None,
+    task_id: str | None = None,
 ) -> str:
     """Export the currently open IDB to Diaphora-format SQLite.
 
@@ -245,8 +246,14 @@ def _export_diaphora(
     import ida_bytes
     import ida_xref
     import ida_hexrays
-    import ida_struct
-    import ida_enum
+    try:
+        import ida_struct
+    except ImportError:
+        ida_struct = None
+    try:
+        import ida_enum
+    except ImportError:
+        ida_enum = None
     import ida_typeinf
     import ida_ida
 
@@ -266,13 +273,26 @@ def _export_diaphora(
         except Exception:
             pass
         _state["root_filename"] = ida_nalt.get_root_filename() or ""
-        _state["md5"] = idc.GetInputMD5() or ""
-        _state["imagebase"] = hex(ida_ida.get_imagebase())
-        _state["is64"] = ida_ida.inf_is_64bit()
+        md5_val = ""
+        try:
+            m = ida_nalt.retrieve_input_file_md5()
+            if m:
+                md5_val = m.hex()
+        except Exception:
+            try:
+                m = idc.GetInputMD5()
+                if m:
+                    md5_val = m
+            except Exception:
+                pass
+        _state["md5"] = md5_val
+        _state["imagebase"] = hex(idaapi.get_imagebase())
+        _state["is64"] = idaapi.inf_is_64bit()
 
         # Structures
         structs = []
-        for idx in range(ida_struct.get_struc_qty()):
+        struct_qty = ida_struct.get_struc_qty() if ida_struct is not None else 0
+        for idx in range(struct_qty):
             try:
                 sptr = ida_struct.get_struc_by_idx(idx)
                 if not sptr:
@@ -296,8 +316,8 @@ def _export_diaphora(
                     })
                 decl = ""
                 try:
-                    tid = ida_struct.get_struc_id(name)
-                    if tid != ida_ida.BADNODE:
+                    tid = ida_struct.get_struc_id(name) if ida_struct is not None else idaapi.BADNODE
+                    if tid != idaapi.BADNODE:
                         decl = ida_typeinf.get_type(tid) or ""
                 except Exception:
                     pass
@@ -313,7 +333,8 @@ def _export_diaphora(
 
         # Enums
         enums = []
-        for idx in range(ida_enum.get_enum_qty()):
+        enum_qty = ida_enum.get_enum_qty() if ida_enum is not None else 0
+        for idx in range(enum_qty):
             try:
                 eid = ida_enum.get_enum_by_idx(idx)
                 name = ida_enum.get_enum_name(eid) or ""
@@ -367,6 +388,11 @@ def _export_diaphora(
     # ==================================================================
     # Write Phase 1 data to SQLite  (background thread, NO IDA calls)
     # ==================================================================
+    try:
+        if os.path.exists(output_path):
+            os.remove(output_path)
+    except Exception:
+        pass
     conn = sqlite3.connect(output_path)
     cur = conn.cursor()
     cur.executescript(DIAPHORA_SCHEMA_SQL)
@@ -444,6 +470,12 @@ def _export_diaphora(
         done = batch_start + len(batch_slice)
         if done % 200 == 0 or done >= total:
             print(f"[Diaphora] {min(done, total)}/{total}")
+            if task_id:
+                EXPORT_TASKS[task_id] = {
+                    "progress": min(done, total),
+                    "total": total,
+                    "percentage": int(min(done, total) * 100 / total)
+                }
 
     conn.commit()
     conn.close()
@@ -568,8 +600,10 @@ def _collect_one(func, use_decompiler, summaries_only):
             for head in idautils.Heads(func.start_ea, func.end_ea):
                 for op_n in range(6):
                     op_val = idc.get_operand_value(head, op_n)
-                    if op_val != 0 and op_val != ida_ida.BADADDR:
-                        constants.append({"value": op_val, "op": op_n})
+                    if op_val != 0 and op_val != idaapi.BADADDR:
+                        # Cast to signed 64-bit integer to prevent SQLite overflow
+                        signed_val = (op_val + 2**63) % 2**64 - 2**63
+                        constants.append({"value": signed_val, "op": op_n})
         except Exception:
             pass
 
@@ -918,6 +952,7 @@ class MCP(idaapi.plugin_t):
                 self._send_json({
                     "ok": True,
                     "capabilities": ["diaphora/export"],
+                    "idb_path": idc.get_idb_path() if hasattr(idc, "get_idb_path") else "",
                 })
 
             def _handle_diaphora_export(self):
@@ -933,12 +968,15 @@ class MCP(idaapi.plugin_t):
                     self._send_json({"ok": False, "error": f"Invalid request: {e}"}, 400)
                     return
 
-                output = opts.get("output_path") or (
-                    os.path.splitext(idaapi.get_idb_path())[0] + ".diaphora.sqlite"
-                )
+                state = {}
+                def _sync_init():
+                    state["output"] = opts.get("output_path") or (
+                        os.path.splitext(idaapi.get_idb_path())[0] + ".diaphora.sqlite"
+                    )
+                    _auto_decompiler(opts)
+                idaapi.execute_sync(_sync_init, idaapi.MFF_READ)
+                output = state["output"]
 
-                # Auto-detect decompiler preference when not explicitly set
-                opts = _auto_decompiler(opts)
                 print(
                     f"[Diaphora] Export to {output} "
                     f"(decompiler={'on' if opts.get('use_decompiler') else 'off'})"
@@ -955,9 +993,10 @@ class MCP(idaapi.plugin_t):
                     """
                     progress = None
                     try:
-                        progress = idaapi.timeldk_progress_t("Diaphora export")
-                        progress.show()
-                        path = _export_diaphora(output, opts, progress)
+                        if hasattr(idaapi, "timeldk_progress_t"):
+                            progress = idaapi.timeldk_progress_t("Diaphora export")
+                            progress.show()
+                        path = _export_diaphora(output, opts, progress, task_id)
                         EXPORT_TASKS[task_id] = {"ok": True, "path": path}
                         print(f"[Diaphora] Export complete: {path}")
                     except RuntimeError as e:
@@ -969,19 +1008,26 @@ class MCP(idaapi.plugin_t):
                         print(f"[Diaphora] Export failed: {e}")
                     finally:
                         if progress:
-                            progress.close()
-                        idaapi.process_ui_action("Refresh")
+                            def _close_progress():
+                                try:
+                                    progress.close()
+                                except Exception:
+                                    pass
+                            idaapi.execute_sync(_close_progress, idaapi.MFF_WRITE)
 
                 threading.Thread(target=_worker, daemon=True).start()
                 self._send_json({"ok": True, "task_id": task_id})
 
             def _handle_diaphora_poll(self, task_id: str):
                 if task_id not in EXPORT_TASKS:
-                    self._send_json({"ok": True, "done": False})
+                    self._send_json({"done": False, "percentage": 0})
                     return
 
                 result = dict(EXPORT_TASKS[task_id])
-                result["done"] = True
+                if "ok" in result:
+                    result["done"] = True
+                else:
+                    result["done"] = False
                 self._send_json(result)
 
         port = self.port

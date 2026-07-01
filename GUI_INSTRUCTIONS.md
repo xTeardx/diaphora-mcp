@@ -6,30 +6,46 @@ The GUI Bridge allows the MCP server to run database exports instantly from a ru
 
 ---
 
+> [!NOTE]
+> **Important Update**: The legacy XML-RPC listener (`diaphora_gui_listener.py` on port `28652`) has been **deprecated and removed** due to UI thread-safety limitations and event-loop deadlocks. 
+> 
+> The bridge is now powered by the official, robust **`ida_mcp.py` HTTP plugin** (running on port `13337` by default).
+
 ## Step 1. Installing the Plugin in IDA Pro
 
-You have two options to run the listener plugin in IDA Pro:
+The plugin is part of the `ida-pro-mcp` package. To install it:
+1. Locate the `ida_mcp.py` plugin file in the repository under `idalib/ida_mcp.py`.
+2. Copy it to your IDA Pro user plugins directory:
+   - **Windows**: `%APPDATA%\Hex-Rays\IDA Pro\plugins\ida_mcp.py` (e.g. `C:\Users\<Name>\AppData\Roaming\Hex-Rays\IDA Pro\plugins\ida_mcp.py`)
+   - **macOS/Linux**: `~/.idapro/plugins/ida_mcp.py`
 
-### Option A: Automatic Start (Recommended)
-Copy the `diaphora_gui_listener.py` file to your IDA Pro plugins directory:
-* Path: `<IDA_INSTALL_DIR>\plugins\` (e.g. `C:\Program Files\IDA Pro 9.3\plugins\`)
-
-*The plugin will run automatically in the background on port 28652 every time IDA Pro starts.*
-
-### Option B: Manual Start (For one-time testing)
-1. In your active IDA Pro window, press **Alt+F7** (or select `File` -> `Script file...` from the menu).
-2. Select the `diaphora_gui_listener.py` script from the root of this repository:
-   `<DIAPHORA_MCP_REPO_DIR>\diaphora_gui_listener.py`
-3. You should see the following line in the Output Window at the bottom of IDA Pro:
-   `[Diaphora MCP] GUI listener active on port 28652`
+*The plugin will load automatically when you open IDA Pro GUI.*
 
 ---
 
-## Step 2. Verifying the Setup
+## Step 2. Running and Verifying the Setup
 
-1. Open any project (e.g., `aces.exe.i64`) in IDA Pro GUI and ensure the listener plugin is active.
-2. Ask your AI Agent to export the database:
-   > *“Export <PATH_TO_YOUR_IDB>\aces.exe.i64”*
-3. The MCP server will detect the running GUI session, forward the request to port 28652, and log:
-   `[Diaphora MCP] Active GUI IDA Pro session found! Exporting via GUI...`
-4. The export will execute directly inside your active IDA Pro session, writing the results to SQLite without restarting processes.
+1. Open your database (e.g., `sqlite3_aimp.dll.i64`) in IDA Pro GUI.
+2. In IDA Pro menu, select **Edit -> Plugins -> MCP** (or press **Ctrl+Alt+M**) to start the MCP integration HTTP server.
+3. You should see the following lines in the Output Window at the bottom of IDA Pro:
+   ```
+   [MCP] Plugin loaded, server will start automatically
+   Config: http://127.0.0.1:13337/config.html
+   Diaphora: http://127.0.0.1:13337/diaphora/health
+   ```
+4. Ask your AI Agent to export the database:
+   > *“Export sqlite3_aimp.dll.i64”*
+5. The client will detect the running GUI session on port `13337`, verify that it has the requested file open, and trigger the export in a thread-safe background worker.
+6. The terminal will log the export progress in real-time:
+   ```
+   [Diaphora MCP] Export progress: 6% (200/3362 functions)...
+   [Diaphora MCP] Export progress: 12% (400/3362 functions)...
+   ```
+
+---
+
+## Parallel Headless Exports
+
+If you request an export of a database file that is **not currently open in the GUI**, the client will automatically bypass the GUI and spawn a headless `idat.exe` process in the background. 
+
+Your active GUI session will remain fully responsive and unaffected during the entire headless export.

@@ -53,39 +53,15 @@ async def run_export(
         except Exception:
             summaries_only = False
 
-    # ── 0. Try ida_mcp plugin first (export inside already-running IDA) ──
+    # 0. Try ida_mcp plugin first (export inside already-running IDA)
     plugin_res = _try_via_plugin(idb_path, output_path, use_decompiler, summaries_only)
-    if plugin_res is not None:
+    if plugin_res != "NO_PLUGIN":
         # None = success (output written to output_path),
-        # str  = error from plugin
+        # str  = error from plugin (excluding "NO_PLUGIN" which falls through)
         return plugin_res
-    # plugin_res == "NO_PLUGIN" → fall through
 
-    # ── 1. Try exporting via active GUI IDA Pro session (XML-RPC) ──
-    try:
-        client = xmlrpc.client.ServerProxy("http://127.0.0.1:28652")
-        if client.ping():
-            # Check API version for backward compat with older listeners
-            api_version = 1
-            try:
-                api_version = client.version()
-            except Exception:
-                api_version = 1
 
-            if api_version >= 2:
-                res = client.export_current_db(output_path, use_decompiler, summaries_only)
-            else:
-                res = client.export_current_db(output_path, use_decompiler)
-            if res is True:
-                if check_db(output_path) is None:
-                    return None
-                else:
-                    return f"GUI export finished but database at {output_path} is invalid."
-            else:
-                return f"GUI export failed: {res}"
-    except (ConnectionRefusedError, OSError, xmlrpc.client.Fault, xmlrpc.client.ProtocolError):
-        # GUI server is not listening or ping failed, fall back to headless idat.exe
-        pass
+    # XML-RPC GUI fallback removed to prevent GUI freezes and incorrect database exports
 
     # ── 2. Check if database lock files are held by a running GUI instance ──
     base = os.path.splitext(idb_path)[0]
@@ -108,16 +84,8 @@ async def run_export(
             f"and use the resulting SQLite database."
         )
 
-    # ── 3. Check for running IDA that didn't respond via plugin ──
-    if _any_ida_running():
-        procs = _is_ida_running()
-        pid_list = ", ".join(f"{name}(PID {pid})" for pid, name in procs)
-        return (
-            f"IDA Pro is already running ({pid_list}) but the ida_mcp plugin "
-            f"did not respond on http://127.0.0.1:13337/diaphora/health.\n"
-            f"Either activate the plugin (Edit → Plugins → MCP in IDA GUI), "
-            f"or close IDA and retry."
-        )
+    # Running IDA check bypassed to allow headless exports of other databases
+    pass
 
     # ── 4. Headless export via idat.exe ──
     with ExportLogger(idb_path, output_path) as log:
@@ -304,22 +272,27 @@ _PLUGIN_EXPORT_URL = "http://127.0.0.1:13337/diaphora/export"
 
 
 def _any_ida_running() -> bool:
-    """Return ``True`` if an ``ida64.exe`` or ``idat64.exe`` process is running."""
+    """Return ``True`` if an ``ida.exe``, ``ida64.exe``, ``idat.exe``, or ``idat64.exe`` process is running."""
     try:
         for proc in psutil.process_iter(["name"]):
             name = (proc.info["name"] or "").lower()
-            if name in ("ida64.exe", "idat64.exe"):
+            if name in ("ida.exe", "ida64.exe", "idat.exe", "idat64.exe"):
                 return True
     except Exception:
         pass
     return False
 
 
-def _ida_plugin_responding() -> bool:
-    """Return ``True`` if the ``ida_mcp`` HTTP endpoint is reachable."""
+def _ida_plugin_responding(idb_path: str) -> bool:
+    """Return ``True`` if the ``ida_mcp`` HTTP endpoint is reachable and has the requested IDB open."""
     try:
         resp = requests.get(_PLUGIN_HEALTH_URL, timeout=2)
-        return resp.status_code == 200
+        if resp.status_code == 200:
+            data = resp.json()
+            open_idb = data.get("idb_path", "")
+            if open_idb:
+                return os.path.normpath(open_idb).lower() == os.path.normpath(idb_path).lower()
+        return False
     except requests.RequestException:
         return False
 
@@ -346,7 +319,7 @@ def _try_via_plugin(
     if not _any_ida_running():
         return "NO_PLUGIN"
 
-    if not _ida_plugin_responding():
+    if not _ida_plugin_responding(idb_path):
         return "NO_PLUGIN"
 
     if summaries_only is None:
@@ -410,6 +383,14 @@ def _try_via_plugin(
                 if err == "cancelled":
                     return "Export cancelled by user during execution (Cancel was pressed in IDA GUI)."
                 return f"Export via ida_mcp plugin failed: {err}"
+        else:
+            percentage = status.get("percentage", 0)
+            progress = status.get("progress", 0)
+            total = status.get("total", 0)
+            if total > 0:
+                print(f"[Diaphora MCP] Export progress: {percentage}% ({progress}/{total} functions)...")
+            else:
+                print(f"[Diaphora MCP] Export is starting/initializing...")
 
         time.sleep(2)
 
@@ -429,7 +410,7 @@ def _is_ida_running() -> list[tuple[int, str]]:
     for proc in psutil.process_iter(["name", "pid"]):
         try:
             name = (proc.info["name"] or "").lower()
-            if name in ("ida64.exe", "idat64.exe"):
+            if name in ("ida.exe", "ida64.exe", "idat.exe", "idat64.exe"):
                 pid = proc.info["pid"]
                 if pid is not None:
                     found.append((pid, proc.info["name"]))
