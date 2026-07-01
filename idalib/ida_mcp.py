@@ -951,9 +951,12 @@ class MCP(idaapi.plugin_t):
             def _handle_diaphora_health(self):
                 import idc
                 import idaapi
+                result = []
                 def _get_path():
-                    return idc.get_idb_path() if hasattr(idc, "get_idb_path") else ""
-                path = idaapi.execute_sync(_get_path, idaapi.MFF_READ)
+                    result.append(idc.get_idb_path() if hasattr(idc, "get_idb_path") else "")
+                    return 0
+                idaapi.execute_sync(_get_path, idaapi.MFF_READ)
+                path = result[0] if result else ""
                 self._send_json({
                     "ok": True,
                     "capabilities": ["diaphora/export"],
