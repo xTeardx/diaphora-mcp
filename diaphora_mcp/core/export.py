@@ -100,6 +100,11 @@ async def run_export(
     with ExportLogger(idb_path, output_path) as log:
         _clean_stale_locks(idb_path, log)
 
+        # Ensure the Hex-Rays licence is free before spawning idat64.exe
+        license_err = _ensure_license_free(idb_path, log)
+        if license_err:
+            return license_err
+
         env = os.environ.copy()
         env["DIAPHORA_AUTO"] = "1"
         env["DIAPHORA_EXPORT_FILE"] = output_path
@@ -270,6 +275,179 @@ async def run_export(
             pass
 
         return None  # success
+
+
+def _is_ida_running() -> list[tuple[int, str]]:
+    """Check if any IDA Pro process is currently running.
+
+    Returns a list of (PID, process_name) tuples for every running
+    ``ida64.exe`` or ``idat64.exe`` process.  Empty list means the
+    Hex-Rays license is free.
+    """
+    import psutil
+
+    found: list[tuple[int, str]] = []
+    for proc in psutil.process_iter(["name", "pid"]):
+        try:
+            name = (proc.info["name"] or "").lower()
+            if name in ("ida64.exe", "idat64.exe"):
+                pid = proc.info["pid"]
+                if pid is not None:
+                    found.append((pid, proc.info["name"]))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return found
+
+
+def _rpc_shutdown_ida(log: ExportLogger) -> bool:
+    """Try to shut down an already-running IDA Pro via XML-RPC on port 13337.
+
+    Port 13337 is the standard control port used by the ``ida_mcp`` /
+    ``idalib-mcp`` plugin.  We probe for known exit methods and call the
+    first one that matches.
+
+    Returns ``True`` if the RPC call was accepted (the remote process
+    *should* begin shutting down), ``False`` if the endpoint is not
+    reachable or does not expose a compatible API.
+    """
+    import xmlrpc.client
+
+    try:
+        proxy = xmlrpc.client.ServerProxy(
+            "http://127.0.0.1:13337",
+            allow_none=True,
+            use_builtin_types=True,
+        )
+
+        # 1) Discover available methods, if the server supports introspection
+        known = []
+        try:
+            known = proxy.system.listMethods()
+            log.info(f"IDA XML-RPC methods available: {known}")
+        except Exception:
+            pass
+
+        # 2) Try known shutdown methods
+        candidates = ["exit", "exit_ida", "shutdown", "save_and_exit", "close"]
+        for m in candidates:
+            if m in known:
+                log.info(f"Calling IDA RPC {m}() with save=True …")
+                result = getattr(proxy, m)(True)
+                log.info(f"IDA RPC {m}() returned: {result}")
+                return True
+
+        # 3) Blind probe (server doesn't support listMethods)
+        for m in ("exit", "shutdown", "save_and_exit"):
+            try:
+                log.info(f"Blind probe: IDA RPC {m}() with save=True …")
+                result = getattr(proxy, m)(True)
+                log.info(f"IDA RPC {m}() returned: {result}")
+                return True
+            except (xmlrpc.client.Fault, AttributeError):
+                continue
+
+        log.warn("IDA RPC port 13337 responded but no shutdown method found")
+        return False
+
+    except (ConnectionRefusedError, OSError):
+        log.info("IDA RPC port 13337 not reachable — no IDA-MCP plugin running")
+        return False
+    except xmlrpc.client.ProtocolError as e:
+        log.info(f"IDA RPC protocol error on port 13337: {e}")
+        return False
+
+
+def _backup_idb(idb_path: str, log: ExportLogger) -> str | None:
+    """Create a timestamped ``.bak`` copy of *idb_path*.
+
+    Returns the backup path on success, ``None`` if the file does not
+    exist or the copy failed.
+    """
+    import shutil
+    from pathlib import Path
+
+    src = Path(idb_path)
+    if not src.is_file():
+        return None
+
+    backup = src.with_name(f"{src.stem}.i64.bak.{int(time.time())}")
+    try:
+        shutil.copy2(src, backup)
+        log.info(f"IDB backup created: {backup}")
+        return str(backup)
+    except OSError as e:
+        log.warn(f"Failed to create IDB backup: {e}")
+        return None
+
+
+def _ensure_license_free(idb_path: str, log: ExportLogger) -> str | None:
+    """Check for running IDA processes and attempt to resolve license conflicts.
+
+    Workflow:
+      1. Scan for ``ida64.exe`` / ``idat64.exe`` processes via *psutil*.
+      2. If any are found, try a graceful XML-RPC ``save + exit`` on
+         port 13337 (the standard ``ida_mcp`` / ``idalib-mcp`` control port).
+      3. If RPC succeeds, wait up to 15 seconds for the process(es) to exit.
+      4. If RPC fails, back up ``.i64`` → ``.i64.bak.<timestamp>`` and return
+         a clear error message with recovery instructions.
+
+    Returns ``None`` when the license is free to use, or an error string.
+    """
+    running = _is_ida_running()
+    if not running:
+        return None  # License is free, proceed
+
+    pid_list = ", ".join(f"{name}(PID {pid})" for pid, name in running)
+    log.info(
+        f"IDA Pro already running ({pid_list}). "
+        "Attempting graceful shutdown via XML-RPC on port 13337 …"
+    )
+
+    rpc_ok = _rpc_shutdown_ida(log)
+
+    if rpc_ok:
+        import psutil
+
+        # Wait for processes to exit
+        for pid, _name in running:
+            try:
+                proc = psutil.Process(pid)
+                proc.wait(timeout=15)
+                log.info(f"IDA process PID {pid} exited cleanly after RPC shutdown")
+            except (psutil.NoSuchProcess,):
+                pass  # Already gone
+            except psutil.TimeoutExpired:
+                log.warn(f"IDA process PID {pid} did not exit within 15s of RPC call")
+
+        # One last check
+        stragglers = _is_ida_running()
+        if stragglers:
+            still = ", ".join(f"PID {p}" for p, _ in stragglers)
+            log.warn(
+                f"RPC shutdown sent but {still} still running — "
+                "proceeding anyway; idat64 may fail."
+            )
+        return None  # Proceed — best-effort shutdown attempted
+
+    # RPC failed — back up and return a clear error
+    backup_path = _backup_idb(idb_path, log)
+    msg = (
+        f"IDA Pro is already running ({pid_list}) and could not be shut "
+        "down automatically.\n"
+        "The Hex-Rays licence is in use, so headless idat64.exe cannot start.\n"
+    )
+    if backup_path:
+        msg += f"A backup was saved to: {backup_path}\n"
+    msg += (
+        "To resolve:\n"
+        "  1. Save your work in IDA Pro (File → Save)\n"
+        "  2. Close IDA Pro (File → Exit)\n"
+        "  3. Retry the export\n"
+        "\n"
+        "Alternatively, export from the running GUI session directly:\n"
+        "  File → Diaphora → Export, then use diff_diaphora_dbs() instead."
+    )
+    return msg
 
 
 def _clean_stale_locks(idb_path: str, log: ExportLogger):

@@ -9,4 +9,5 @@ description = "MCP server for automated binary diffing via Diaphora + IDA Pro"
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.0.0",
+    "psutil>=5.9.0",
 ]
