@@ -219,19 +219,23 @@ def _export_diaphora(
 ) -> str:
     """Export the currently open IDB to Diaphora-format SQLite.
 
+    Designed to run on a **background thread**.  Uses ``execute_sync(MFF_READ)``
+    only for brief IDAPython data collection (one batch at a time), keeping
+    the main IDA thread responsive between batches.
+
     Args:
         output_path: Path for the output .sqlite file.
         opts: Dict with optional keys:
             - use_decompiler (bool): Include Hex-Rays pseudocode.
             - summaries_only (bool): Skip detailed ASM/bytes/blocks.
-        progress: Optional progress indicator; checked periodically
-            for user cancellation.
+        progress: Optional progress indicator; checked for user cancellation
+            *between* batches (on the background thread).
 
     Returns:
         The output path on success.
 
     Raises:
-        RuntimeError on failure.
+        RuntimeError on failure or user cancellation ("cancelled").
     """
     import idautils
     import idc
@@ -248,264 +252,406 @@ def _export_diaphora(
 
     use_decompiler = opts.get("use_decompiler", False)
     summaries_only = opts.get("summaries_only", False)
+    BATCH_SIZE = 50
 
+    # ==================================================================
+    # Phase 1 — quick data collection on the main thread (one sync call)
+    # ==================================================================
+    _state: dict = {}
+
+    def _phase1():
+        _state["compiler"] = ""
+        try:
+            _state["compiler"] = ida_typeinf.get_compiler_name(ida_ida.inf_get_compiler())
+        except Exception:
+            pass
+        _state["root_filename"] = ida_nalt.get_root_filename() or ""
+        _state["md5"] = idc.GetInputMD5() or ""
+        _state["imagebase"] = hex(ida_ida.get_imagebase())
+        _state["is64"] = ida_ida.inf_is_64bit()
+
+        # Structures
+        structs = []
+        for idx in range(ida_struct.get_struc_qty()):
+            try:
+                sptr = ida_struct.get_struc_by_idx(idx)
+                if not sptr:
+                    continue
+                name = ida_struct.get_struc_name(sptr.id) or ""
+                members = []
+                for j in range(ida_struct.get_struc_member_qty(sptr)):
+                    m = ida_struct.get_struc_member_by_idx(sptr, j)
+                    if not m:
+                        continue
+                    try:
+                        tinfo = ida_struct.get_member_tinfo(m)
+                        tstr = tinfo.dstr() if tinfo else ""
+                    except Exception:
+                        tstr = ""
+                    members.append({
+                        "offset": getattr(m, "soff", 0),
+                        "name":   ida_struct.get_member_name(m.id) or "",
+                        "size":   getattr(m, "size", 0),
+                        "type":   tstr,
+                    })
+                decl = ""
+                try:
+                    tid = ida_struct.get_struc_id(name)
+                    if tid != ida_ida.BADNODE:
+                        decl = ida_typeinf.get_type(tid) or ""
+                except Exception:
+                    pass
+                structs.append({
+                    "name": name,
+                    "size": getattr(sptr, "size", 0),
+                    "members": members,
+                    "decl": decl,
+                })
+            except Exception:
+                continue
+        _state["structs"] = structs
+
+        # Enums
+        enums = []
+        for idx in range(ida_enum.get_enum_qty()):
+            try:
+                eid = ida_enum.get_enum_by_idx(idx)
+                name = ida_enum.get_enum_name(eid) or ""
+                bf = ida_enum.is_bf(eid)
+                members = []
+                for bit in range(ida_enum.get_enum_size(eid) * 8):
+                    cid = ida_enum.get_first_enum_member(eid, bit)
+                    if cid != ida_enum.DEFMASK:
+                        members.append({
+                            "name":  ida_enum.get_enum_member_name(cid) or "",
+                            "value": ida_enum.get_enum_member_value(cid),
+                        })
+                enums.append({"name": name, "bf": 1 if bf else 0, "members": members})
+            except Exception:
+                continue
+        _state["enums"] = enums
+
+        # Import cache
+        _state["imp_cache"] = _build_import_cache()
+
+        # Function addresses + comments
+        addrs = []
+        comments = []
+        for func_ea in idautils.Functions():
+            try:
+                func = ida_funcs.get_func(func_ea)
+                if not func:
+                    continue
+                addrs.append(func.start_ea)
+                # Function comments
+                comment = idc.get_func_comment(func_ea)
+                if comment:
+                    comments.append((hex(func_ea), comment, "function"))
+                # Per-instruction comments
+                for head in idautils.Heads(func.start_ea, func.end_ea):
+                    for ctype, label in [(0, "regular"), (1, "repeatable")]:
+                        try:
+                            text = idc.get_cmt(head, ctype)
+                            if text:
+                                comments.append((hex(head), text, label))
+                        except Exception:
+                            pass
+            except Exception:
+                continue
+        _state["addrs"] = addrs
+        _state["comments"] = comments
+        _state["total"] = len(addrs)
+
+    idaapi.execute_sync(_phase1, idaapi.MFF_READ)
+
+    # ==================================================================
+    # Write Phase 1 data to SQLite  (background thread, NO IDA calls)
+    # ==================================================================
     conn = sqlite3.connect(output_path)
     cur = conn.cursor()
     cur.executescript(DIAPHORA_SCHEMA_SQL)
 
-    # ── Metadata ──
-    try:
-        compiler = ida_typeinf.get_compiler_name(ida_ida.inf_get_compiler())
-    except Exception:
-        compiler = ""
-    meta_rows = [
-        ("module",    ida_nalt.get_root_filename() or ""),
-        ("md5",       idc.GetInputMD5() or ""),
-        ("base",      hex(ida_ida.get_imagebase())),
-        ("arch",      "x64" if ida_ida.inf_is_64bit() else "x86"),
-        ("compiler",  compiler),
-    ]
-    cur.executemany("INSERT OR IGNORE INTO metadata VALUES (?, ?)", meta_rows)
+    # Metadata
+    arch = "x64" if _state["is64"] else "x86"
+    cur.executemany("INSERT OR IGNORE INTO metadata VALUES (?, ?)", [
+        ("module",   _state["root_filename"]),
+        ("md5",      _state["md5"]),
+        ("base",     _state["imagebase"]),
+        ("arch",     arch),
+        ("compiler", _state["compiler"]),
+    ])
 
-    # ── Structures ──
-    for idx in range(ida_struct.get_struc_qty()):
-        try:
-            sptr = ida_struct.get_struc_by_idx(idx)
-            if not sptr:
-                continue
-            name = ida_struct.get_struc_name(sptr.id) or ""
-            members = []
-            for j in range(ida_struct.get_struc_member_qty(sptr)):
-                m = ida_struct.get_struc_member_by_idx(sptr, j)
-                if not m:
+    # Structures
+    for s in _state["structs"]:
+        cur.execute(
+            "INSERT OR REPLACE INTO structures VALUES (?, ?, ?, ?)",
+            (s["name"], s["size"], json.dumps(s["members"]), s["decl"]),
+        )
+
+    # Enums
+    for e in _state["enums"]:
+        cur.execute(
+            "INSERT OR REPLACE INTO enums VALUES (?, ?, ?)",
+            (e["name"], e["bf"], json.dumps(e["members"])),
+        )
+
+    # Comments
+    for (addr, text, ctype) in _state["comments"]:
+        cur.execute("INSERT INTO comments VALUES (?, ?, ?)", (addr, text, ctype))
+
+    imp_cache = _state["imp_cache"]
+    addrs = _state["addrs"]
+    total = _state["total"]
+
+    # ==================================================================
+    # Phase 2 — batch function processing
+    # Each batch collects data via a brief execute_sync call, then the
+    # background thread writes to SQLite while the main thread is free.
+    # ==================================================================
+    conn.commit()  # flush Phase 1 before starting batch inserts
+
+    for batch_start in range(0, total, BATCH_SIZE):
+        batch_slice = addrs[batch_start:batch_start + BATCH_SIZE]
+        batch_funcs: list[dict] = []
+
+        def _collect_batch():
+            for addr in batch_slice:
+                try:
+                    func = ida_funcs.get_func(addr)
+                    if not func:
+                        continue
+                    data = _collect_one(func, use_decompiler, summaries_only)
+                    batch_funcs.append(data)
+                except Exception:
                     continue
-                try:
-                    tinfo = ida_struct.get_member_tinfo(m)
-                    tstr = tinfo.dstr() if tinfo else ""
-                except Exception:
-                    tstr = ""
-                members.append({
-                    "offset": getattr(m, "soff", 0),
-                    "name":   ida_struct.get_member_name(m.id) or "",
-                    "size":   getattr(m, "size", 0),
-                    "type":   tstr,
-                })
-            decl = ""
+
+        idaapi.execute_sync(_collect_batch, idaapi.MFF_READ)
+
+        # Write batch to SQLite (background thread, no IDA calls)
+        for data in batch_funcs:
+            _write_one(cur, data, imp_cache)
+
+        # Cancel check (runs on background thread — safe)
+        if progress and progress.cancelled():
+            conn.close()
             try:
-                tid = ida_struct.get_struc_id(name)
-                if tid != ida_ida.BADNODE:
-                    decl = ida_typeinf.get_type(tid) or ""
-            except Exception:
+                os.remove(output_path)
+            except OSError:
                 pass
-            cur.execute(
-                "INSERT OR REPLACE INTO structures VALUES (?, ?, ?, ?)",
-                (name, getattr(sptr, "size", 0), json.dumps(members), decl),
-            )
-        except Exception:
-            continue
+            raise RuntimeError("cancelled")
 
-    # ── Enums ──
-    for idx in range(ida_enum.get_enum_qty()):
-        try:
-            eid = ida_enum.get_enum_by_idx(idx)
-            name = ida_enum.get_enum_name(eid) or ""
-            bf = ida_enum.is_bf(eid)
-            members = []
-            for bit in range(ida_enum.get_enum_size(eid) * 8):
-                cid = ida_enum.get_first_enum_member(eid, bit)
-                if cid != ida_enum.DEFMASK:
-                    members.append({
-                        "name":  ida_enum.get_enum_member_name(cid) or "",
-                        "value": ida_enum.get_enum_member_value(cid),
-                    })
-            cur.execute(
-                "INSERT OR REPLACE INTO enums VALUES (?, ?, ?)",
-                (name, 1 if bf else 0, json.dumps(members)),
-            )
-        except Exception:
-            continue
-
-    # ── Import cache ──
-    imp_cache = _build_import_cache()
-
-    # ── Comments ──
-    for func_ea in idautils.Functions():
-        try:
-            func = ida_funcs.get_func(func_ea)
-            if not func:
-                continue
-            # Function-level repeatable comment
-            comment = idc.get_func_comment(func_ea)
-            if comment:
-                cur.execute("INSERT INTO comments VALUES (?, ?, ?)",
-                           (hex(func_ea), comment, "function"))
-            # Per-instruction comments
-            for head in idautils.Heads(func.start_ea, func.end_ea):
-                for ctype, label in [(0, "regular"), (1, "repeatable")]:
-                    try:
-                        text = idc.get_cmt(head, ctype)
-                        if text:
-                            cur.execute("INSERT INTO comments VALUES (?, ?, ?)",
-                                       (hex(head), text, label))
-                    except Exception:
-                        pass
-        except Exception:
-            continue
-
-    # ── Functions ──
-    total = len(list(idautils.Functions()))
-    for idx, func_ea in enumerate(idautils.Functions()):
-        if idx % 100 == 0:
-            print(f"[Diaphora] Exporting function {idx}/{total}")
-            if progress and progress.cancelled():
-                print("[Diaphora] Export cancelled by user")
-                conn.commit()
-                conn.close()
-                raise RuntimeError("cancelled")
-            # Refresh UI periodically so the progress bar stays visible
-            # and the main-thread event loop processes pending paints.
-            idaapi.process_ui_action("Refresh")
-
-        try:
-            func = ida_funcs.get_func(func_ea)
-            if not func:
-                continue
-        except Exception:
-            continue
-
-        size = func.end_ea - func.start_ea
-        name = idc.get_func_name(func_ea) or ""
-
-        # CFG + classification
-        complexity = 0
-        blocks = [] if not summaries_only else None
-        callee_set = set()
-        if not summaries_only:
-            try:
-                blocks = list(ida_gdl.FlowChart(func))
-                complexity = len(blocks)
-                for b in blocks:
-                    cur.execute(
-                        "INSERT INTO basic_blocks VALUES (?, ?, ?)",
-                        (hex(func_ea), hex(b.start_ea), b.end_ea - b.start_ea),
-                    )
-            except Exception:
-                pass
-
-        # Callee list for classification
-        callee_list = []
-        try:
-            callee_list = list(idautils.CodeRefsFrom(func_ea, 0))
-            for ref in callee_list:
-                target = idc.get_func(ref)
-                if target:
-                    callee_set.add(target.start_ea)
-        except Exception:
-            pass
-        for callee_ea in sorted(callee_set):
-            cur.execute("INSERT INTO calls VALUES (?, ?)",
-                       (hex(func_ea), hex(callee_ea)))
-
-        ftype = _classify_function(func_ea, size, blocks, callee_list)
-
-        # Pseudocode
-        pseudocode = ""
-        if use_decompiler:
-            try:
-                cfunc = ida_hexrays.decompile(func_ea)
-                pseudocode = str(cfunc)
-            except Exception:
-                pass
-
-        # Assembly + byte count
-        asm_lines = []
-        asm_count = 0
-        raw_bytes = b""
-        if not summaries_only:
-            for head in idautils.Heads(func.start_ea, func.end_ea):
-                try:
-                    line = idc.generate_disasm_line(head, 0)
-                    if line:
-                        asm_lines.append(line)
-                    asm_count += 1
-                except Exception:
-                    asm_lines.append("?")
-                    asm_count += 1
-            try:
-                raw_bytes = ida_bytes.get_bytes(func.start_ea, size) or b""
-            except Exception:
-                pass
-
-        asm = "\n".join(asm_lines)
-        raw_hex = raw_bytes.hex()
-        md5_hash = hashlib.md5(raw_bytes).hexdigest() if raw_bytes else ""
-
-        # Mnemonic-only hash
-        md5_min = ""
-        if asm_lines:
-            try:
-                mnemonics = []
-                for head in idautils.Heads(func.start_ea, func.end_ea):
-                    try:
-                        line = idc.generate_disasm_line(head, 0) or ""
-                        mnem = line.split()[0] if line.split() else ""
-                        mnemonics.append(mnem)
-                    except Exception:
-                        pass
-                md5_min = hashlib.md5("|".join(mnemonics).encode()).hexdigest()
-            except Exception:
-                pass
-
-        # Prototype
-        proto = ""
-        try:
-            proto = idc.get_type(func_ea) or ""
-        except Exception:
-            pass
-
-        cur.execute("""
-            INSERT OR REPLACE INTO functions
-            (address, name, size, complexity, instructions,
-             prototype, pseudocode, asm, bytes, md5, md5_min, type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (hex(func_ea), name, size, complexity, asm_count,
-              proto, pseudocode, asm, raw_hex, md5_hash, md5_min, ftype))
-
-        # Strings
-        try:
-            for ref in idautils.DataRefsFrom(func_ea):
-                s = idc.get_strlit_contents(ref)
-                if s:
-                    cur.execute("INSERT INTO strings VALUES (?, ?, ?)",
-                               (hex(func_ea), s.decode("utf-8", errors="replace"), hex(ref)))
-        except Exception:
-            pass
-
-        # Constants
-        if not summaries_only:
-            try:
-                for head in idautils.Heads(func.start_ea, func.end_ea):
-                    for op_n in range(6):
-                        op_val = idc.get_operand_value(head, op_n)
-                        if op_val != 0 and op_val != ida_ida.BADADDR:
-                            cur.execute("INSERT INTO constants VALUES (?, ?, ?)",
-                                       (hex(func_ea), op_val, op_n))
-            except Exception:
-                pass
-
-        # Imports
-        try:
-            for ref in callee_list:
-                imp = imp_cache.get(ref)
-                if imp:
-                    cur.execute("INSERT INTO imports VALUES (?, ?, ?)",
-                               (hex(func_ea), imp[0], imp[1]))
-        except Exception:
-            pass
+        # Progress
+        done = batch_start + len(batch_slice)
+        if done % 200 == 0 or done >= total:
+            print(f"[Diaphora] {min(done, total)}/{total}")
 
     conn.commit()
     conn.close()
     return output_path
+
+
+def _collect_one(func, use_decompiler, summaries_only):
+    """Collect all Diaphora-relevant data for one function.
+
+    Must be called on the main IDA thread (inside execute_sync).
+    Returns a plain dict — no IDAPython objects.
+    """
+    import idautils
+    import idc
+    import ida_funcs
+    import ida_gdl
+    import ida_hexrays
+    import ida_bytes
+    import ida_ida
+    import hashlib
+
+    func_ea = func.start_ea
+    size = func.end_ea - func.start_ea
+    name = idc.get_func_name(func_ea) or ""
+
+    # CFG
+    complexity = 0
+    blocks_raw = [] if not summaries_only else None
+    callee_set: set = set()
+    if not summaries_only:
+        try:
+            blocks_raw = list(ida_gdl.FlowChart(func))
+            complexity = len(blocks_raw)
+        except Exception:
+            pass
+
+    # Callees
+    callee_list = []
+    try:
+        callee_list = list(idautils.CodeRefsFrom(func_ea, 0))
+        for ref in callee_list:
+            target = idc.get_func(ref)
+            if target:
+                callee_set.add(target.start_ea)
+    except Exception:
+        pass
+
+    ftype = _classify_function(func_ea, size, blocks_raw, callee_list)
+
+    # Pseudocode
+    pseudocode = ""
+    if use_decompiler:
+        try:
+            cfunc = ida_hexrays.decompile(func_ea)
+            pseudocode = str(cfunc)
+        except Exception:
+            pass
+
+    # Assembly + bytes
+    asm_lines = []
+    asm_count = 0
+    raw_bytes = b""
+    if not summaries_only:
+        for head in idautils.Heads(func.start_ea, func.end_ea):
+            try:
+                line = idc.generate_disasm_line(head, 0)
+                if line:
+                    asm_lines.append(line)
+                asm_count += 1
+            except Exception:
+                asm_lines.append("?")
+                asm_count += 1
+        try:
+            raw_bytes = ida_bytes.get_bytes(func.start_ea, size) or b""
+        except Exception:
+            pass
+
+    asm = "\n".join(asm_lines)
+    raw_hex = raw_bytes.hex()
+    md5_hash = hashlib.md5(raw_bytes).hexdigest() if raw_bytes else ""
+
+    # Mnemonic-only hash
+    md5_min = ""
+    if asm_lines:
+        try:
+            mnemonics = []
+            for head in idautils.Heads(func.start_ea, func.end_ea):
+                try:
+                    line = idc.generate_disasm_line(head, 0) or ""
+                    mnem = line.split()[0] if line.split() else ""
+                    mnemonics.append(mnem)
+                except Exception:
+                    pass
+            md5_min = hashlib.md5("|".join(mnemonics).encode()).hexdigest()
+        except Exception:
+            pass
+
+    # Prototype
+    proto = ""
+    try:
+        proto = idc.get_type(func_ea) or ""
+    except Exception:
+        pass
+
+    # Strings referenced by this function
+    strings = []
+    try:
+        for ref in idautils.DataRefsFrom(func_ea):
+            s = idc.get_strlit_contents(ref)
+            if s:
+                strings.append({
+                    "string": s.decode("utf-8", errors="replace"),
+                    "xref": hex(ref),
+                })
+    except Exception:
+        pass
+
+    # Constants
+    constants = []
+    if not summaries_only:
+        try:
+            for head in idautils.Heads(func.start_ea, func.end_ea):
+                for op_n in range(6):
+                    op_val = idc.get_operand_value(head, op_n)
+                    if op_val != 0 and op_val != ida_ida.BADADDR:
+                        constants.append({"value": op_val, "op": op_n})
+        except Exception:
+            pass
+
+    # Call targets (for imports)
+    call_targets = []
+    for ref in callee_list:
+        call_targets.append(ref)
+
+    return {
+        "ea":       hex(func_ea),
+        "name":     name,
+        "size":     size,
+        "complex":  complexity,
+        "asm_cnt":  asm_count,
+        "proto":    proto,
+        "pseudo":   pseudocode,
+        "asm":      asm,
+        "bytes":    raw_hex,
+        "md5":      md5_hash,
+        "md5_min":  md5_min,
+        "type":     ftype,
+        "callees":  [hex(ea) for ea in sorted(callee_set)],
+        "blocks":   blocks_raw,
+        "strings":  strings,
+        "consts":   constants,
+        "call_tgts": call_targets,
+    }
+
+
+def _write_one(cur, data: dict, imp_cache: dict):
+    """Write one function's collected data to the SQLite database.
+
+    Must be called on a background thread (no IDAPython calls).
+    """
+    # Function row
+    cur.execute("""
+        INSERT OR REPLACE INTO functions
+        (address, name, size, complexity, instructions,
+         prototype, pseudocode, asm, bytes, md5, md5_min, type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        data["ea"], data["name"], data["size"], data["complex"],
+        data["asm_cnt"], data["proto"], data["pseudo"], data["asm"],
+        data["bytes"], data["md5"], data["md5_min"], data["type"],
+    ))
+
+    # Basic blocks
+    for b in (data.get("blocks") or []):
+        try:
+            cur.execute(
+                "INSERT INTO basic_blocks VALUES (?, ?, ?)",
+                (data["ea"], hex(b.start_ea), b.end_ea - b.start_ea),
+            )
+        except Exception:
+            pass
+
+    # Calls
+    for callee_ea in data["callees"]:
+        cur.execute("INSERT INTO calls VALUES (?, ?)", (data["ea"], callee_ea))
+
+    # Strings
+    for s in data["strings"]:
+        cur.execute(
+            "INSERT INTO strings VALUES (?, ?, ?)",
+            (data["ea"], s["string"], s["xref"]),
+        )
+
+    # Constants
+    for c in data["consts"]:
+        cur.execute(
+            "INSERT INTO constants VALUES (?, ?, ?)",
+            (data["ea"], c["value"], c["op"]),
+        )
+
+    # Imports
+    for ref in data.get("call_tgts") or []:
+        imp = imp_cache.get(ref)
+        if imp:
+            cur.execute(
+                "INSERT INTO imports VALUES (?, ?, ?)",
+                (data["ea"], imp[0], imp[1]),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -800,8 +946,13 @@ class MCP(idaapi.plugin_t):
 
                 task_id = str(uuid.uuid4())
 
-                def _run_task():
-                    """Runs on the main IDA thread via execute_sync(MFF_READ)."""
+                def _worker():
+                    """Run the export on a background thread.
+
+                    _export_diaphora() now uses execute_sync() internally in
+                    small batches (50 functions), so the main IDA thread is
+                    never blocked for long.  No wrapping execute_sync needed.
+                    """
                     progress = None
                     try:
                         progress = idaapi.timeldk_progress_t("Diaphora export")
@@ -812,7 +963,7 @@ class MCP(idaapi.plugin_t):
                     except RuntimeError as e:
                         err = str(e)
                         EXPORT_TASKS[task_id] = {"ok": False, "error": err}
-                        print(f"[Diaphora] Export failed: {err}")
+                        print(f"[Diaphora] Export {'cancelled' if err == 'cancelled' else 'failed'}: {err}")
                     except Exception as e:
                         EXPORT_TASKS[task_id] = {"ok": False, "error": str(e)}
                         print(f"[Diaphora] Export failed: {e}")
@@ -820,12 +971,6 @@ class MCP(idaapi.plugin_t):
                         if progress:
                             progress.close()
                         idaapi.process_ui_action("Refresh")
-                    return 0
-
-                def _worker():
-                    # Schedule the export on the main IDA thread with MFF_READ
-                    # (read-only — does not block the GUI event loop)
-                    idaapi.execute_sync(_run_task, idaapi.MFF_READ)
 
                 threading.Thread(target=_worker, daemon=True).start()
                 self._send_json({"ok": True, "task_id": task_id})

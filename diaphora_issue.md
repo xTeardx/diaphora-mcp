@@ -1,103 +1,117 @@
-# IDA Pro не отвечает после экспорта Diaphora через ida_mcp
+# Проблемы экспорта Diaphora через `ida_mcp` и их решения
 
-## Проблема
+## Проблема 1: Конфликт лицензии
 
-После запуска экспорта через `POST /diaphora/export` в `ida_mcp`:
+`export_idb_to_diaphora` запускал `subprocess idat64.exe`, который требовал лицензию Hex-Rays и конфликтовал с уже запущенной IDA GUI.
 
-1. Экспорт успешно завершается, файл `.sqlite` создаётся, но **IDA Pro перестаёт отвечать**
-2. Если нажать **Cancel** во время экспорта — **IDA тоже зависает**
-3. Агент (Claude Code) продолжает бесконечно polling-ить `task_id`, не зная, что экспорт отменён
+### Решение
 
-## Причина
+Делегировать экспорт в `ida_mcp.py` — плагин, который уже живёт внутри IDA и имеет доступ к той же лицензии.
 
-### А. `MFF_WRITE` блокирует IDB
+```
+diaphora-mcp ── HTTP POST /diaphora/export ──► ida_mcp (внутри IDA)
+```
 
-Экспорт запускается через `idaapi.execute_sync(func, MFF_WRITE)`. Экспорт Diaphora — read-only, IDB не изменяется. Но `MFF_WRITE` захватывает блокировку на запись. После завершения экспорта блокировка не отпускается, GUI-цикл IDA зависает в ожидании.
+---
 
-### Б. Cancel не обрабатывается
+## Проблема 2: IDA зависает после экспорта
 
-Когда пользователь жмёт Cancel на прогресс-баре:
-- `idaapi.timeldk_progress_t` прерывает итерацию
-- `EXPORT_TASKS[task_id]` не заполняется — ни успехом, ни ошибкой
-- Агент polling-ит вечно
-- Прогресс-бар остаётся открыт, блокируя GUI
+Экспорт выполняется через `idaapi.execute_sync(func, MFF_WRITE)`. Экспорт Diaphora — read-only, но `MFF_WRITE` захватывает блокировку на запись IDB, которая не отпускается после завершения.
 
-## Решение
+### Решение
 
-### 1. `MFF_READ` вместо `MFF_WRITE`
-
-Экспорт Diaphora не пишет в IDB, поэтому блокировка записи не нужна.
+Использовать `MFF_READ` — не блокирует IDB на запись:
 
 ```python
-# Неправильно — захватывает блокировку записи
-idaapi.execute_sync(export, idaapi.MFF_WRITE)
-
-# Правильно — read-only, не блокирует GUI
 idaapi.execute_sync(export, idaapi.MFF_READ)
 ```
 
-### 2. Ловить Cancel в `except` и закрывать прогресс-бар в `finally`
+---
+
+## Проблема 3: Cancel вешает IDA
+
+Когда пользователь нажимает Cancel — Diaphora кидает `Exception("Cancelled.")`. Если не поймать это исключение, `EXPORT_TASKS[task_id]` не заполняется, агент polling-ит вечно, прогресс-бар не закрывается.
+
+### Решение: ловить все исключения и проверять строку
 
 ```python
-def export():
-    progress = None
-    try:
-        progress = idaapi.timeldk_progress_t("Diaphora export")
-        progress.show()
-        path = _export_diaphora(output, opts, progress)
-        EXPORT_TASKS[task_id] = {"ok": True, "path": path}
-    except idaapi.cancelled:
+try:
+    path = _export_diaphora(...)
+    EXPORT_TASKS[task_id] = {"ok": True, "path": path}
+except BaseException as e:
+    if "cancelled" in str(e).lower():
         EXPORT_TASKS[task_id] = {"ok": False, "error": "cancelled"}
-    except Exception as e:
+    else:
         EXPORT_TASKS[task_id] = {"ok": False, "error": str(e)}
-    finally:
-        if progress:
-            progress.close()       # закрыть прогресс-бар
-        idaapi.process_ui_action("Refresh")  # разблокировать GUI
-    return 0
-
-idaapi.execute_sync(export, idaapi.MFF_READ)
+finally:
+    if progress:
+        progress.close()
+    idaapi.process_ui_action("Refresh")
 ```
 
-### 3. Таймаут на стороне клиента
+---
 
-Polling не должен длиться бесконечно:
+## Проблема 4: Агент ждёт вечно
+
+Если Cancel не обработан — `EXPORT_TASKS[task_id]` не заполняется, и агент polling-ит бесконечно.
+
+### Решение: таймаут в клиенте
 
 ```python
-def _export_via_plugin(idb_path, use_decompiler, summaries_only):
-    resp = requests.post("http://127.0.0.1:13337/diaphora/export", json={...})
-    task_id = resp.json()["task_id"]
+start = time.time()
+timeout = 600
 
-    start = time.time()
-    timeout = 600
+while time.time() - start < timeout:
+    time.sleep(2)
+    poll = requests.get(f"http://127.0.0.1:13337/diaphora/export/{task_id}")
+    data = poll.json()
+    if not data.get("done"):
+        continue
+    if data.get("ok"):
+        return data["path"]
+    if data.get("error") == "cancelled":
+        raise RuntimeError("Export cancelled by user")
+    raise RuntimeError(f"Export failed: {data.get('error')}")
 
-    while time.time() - start < timeout:
-        time.sleep(2)
-        poll = requests.get(f"http://127.0.0.1:13337/diaphora/export/{task_id}")
-        data = poll.json()
-        if not data.get("done"):
-            continue
-        if data.get("ok"):
-            return data["path"]
-        if data.get("error") == "cancelled":
-            raise RuntimeError("Export cancelled by user")
-        raise RuntimeError(f"Export failed: {data.get('error')}")
-
-    raise TimeoutError(f"Export timed out after {timeout}s")
+raise TimeoutError(f"Export timed out after {timeout}s")
 ```
 
-## Код целиком (ida_mcp.py)
+---
+
+## Проблема 5: Декомпиляция слишком медленная на больших бинарниках
+
+На бинарнике с 3400 функций декомпиляция занимает >5 минут. На 100k+ это часы.
+
+### Решение: автоотключение при >25k функций
+
+```python
+MAX_FUNCTIONS_FOR_DECOMPILER = 25_000
+
+def _should_use_decompiler(body: dict) -> bool:
+    user_pref = body.get("use_decompiler")
+    if user_pref is not None:
+        return user_pref
+    total = len(list(idautils.Functions()))
+    return total < MAX_FUNCTIONS_FOR_DECOMPILER
+```
+
+Агент может явно передать `use_decompiler: true`.
+
+---
+
+## Финальный код эндпоинта
 
 ```python
 import uuid, threading, idaapi
 
 EXPORT_TASKS = {}
+MAX_FUNCTIONS_FOR_DECOMPILER = 25_000
+
 
 @app.post("/diaphora/export")
 def start_export(body: dict) -> dict:
     task_id = str(uuid.uuid4())
     output = body.get("output_path") or _default_output()
-    use_decompiler = _should_use_decompiler(body)
 
     def worker():
         def export():
@@ -106,11 +120,12 @@ def start_export(body: dict) -> dict:
                 progress = idaapi.timeldk_progress_t("Diaphora export")
                 progress.show()
                 path = _export_diaphora(output, body, progress)
-                EXPORT_TASKS[task_id] = {"ok": True, "path": path, "stats": _stats(path)}
-            except idaapi.cancelled:
-                EXPORT_TASKS[task_id] = {"ok": False, "error": "cancelled"}
-            except Exception as e:
-                EXPORT_TASKS[task_id] = {"ok": False, "error": str(e)}
+                EXPORT_TASKS[task_id] = {"ok": True, "path": path}
+            except BaseException as e:
+                if "cancelled" in str(e).lower():
+                    EXPORT_TASKS[task_id] = {"ok": False, "error": "cancelled"}
+                else:
+                    EXPORT_TASKS[task_id] = {"ok": False, "error": str(e)}
             finally:
                 if progress:
                     progress.close()
@@ -129,29 +144,28 @@ def poll_export(task_id: str) -> dict:
     if result is None:
         return {"ok": True, "done": False}
     return {"ok": result.get("ok", False), "done": True, **result}
-```
 
-## Автоотключение декомпилятора для больших бинарников
 
-Декомпиляция (Hex-Rays) — самая дорогая операция. Для больших бинарников она выключена по умолчанию:
+def _default_output() -> str:
+    return os.path.splitext(idaapi.get_idb_path())[0] + ".diaphora.sqlite"
 
-```python
-MAX_FUNCTIONS_FOR_DECOMPILER = 25_000
 
 def _should_use_decompiler(body: dict) -> bool:
     user_pref = body.get("use_decompiler")
     if user_pref is not None:
-        return user_pref           # явный выбор агента
+        return user_pref
     total = len(list(idautils.Functions()))
-    return total < MAX_FUNCTIONS_FOR_DECOMPILER  # авто
+    return total < MAX_FUNCTIONS_FOR_DECOMPILER
 ```
 
-Агент может явно передать `use_decompiler: true` и включить декомпилятор принудительно.
+---
 
-## Итог
+## Сводка
 
-| Ситуация | До | После |
+| Проблема | Причина | Фикс |
 |---|---|---|
-| Экспорт завершился | IDA не отвечает | GUI работает |
-| Пользователь нажал Cancel | IDA зависает + polling бесконечный | Cancel логируется, прогресс закрыт, клиент получает ошибку |
-| Бинарник >25k функций | Декомпиляция жрёт часы | Автоотключена |
+| Конфликт лицензии | `subprocess idat64` | POST в `ida_mcp` |
+| IDA зависла после экспорта | `MFF_WRITE` блокирует IDB | `MFF_READ` |
+| Cancel вешает IDA | `Exception("Cancelled.")` не ловится | `except BaseException` + проверка строки |
+| Агент ждёт вечно | Нет таймаута в клиенте | polling c `timeout=600` |
+| Декомпиляция >5 мин | Hex-Rays на каждой функции | автооткл при >25k функций |
