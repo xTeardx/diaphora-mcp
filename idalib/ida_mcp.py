@@ -949,6 +949,7 @@ class MCP(idaapi.plugin_t):
                 self.wfile.write(body)
 
             def _handle_diaphora_health(self):
+                import idc
                 self._send_json({
                     "ok": True,
                     "capabilities": ["diaphora/export"],
