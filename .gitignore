@@ -30,3 +30,7 @@ verify_*.py
 test_*.py
 debug_*.py
 .claude/
+
+# Python package build artifacts
+*.egg-info/
+*.egg-info
