@@ -13,11 +13,37 @@ MCP server for automating binary diffing via Diaphora + IDA Pro.
 | IDA (idat.exe) | `<your_ida_path>\idat.exe` |
 | IDB databases | `.i64` / `.idb` files |
 | MCP Config | `%USERPROFILE%\.claude\.mcp.json` |
+| **ida-pro-mcp patch** | `idalib/ida_mcp.py` — modified plugin for `/diaphora/export` |
+
+## ida-pro-mcp Integration
+
+When **ida-pro-mcp** (pip package) is installed and its `ida_mcp.py` plugin is active inside IDA GUI, `export_idb_to_diaphora` delegates the export to the running IDA via HTTP **instead of spawning a second `idat64.exe`**. This eliminates the Hex-Rays license conflict entirely.
+
+**How it works:**
+1. `run_export()` → `_try_via_plugin()` probes `GET /diaphora/health` on port 13337
+2. If the endpoint responds → `POST /diaphora/export` with export options
+3. IDA's background thread runs `_export_diaphora()` via IDAPython (full data: functions, CFG, pseudocode, strings, constants, imports, structures, enums, comments)
+4. If the plugin is unreachable → falls through to GUI listener (port 28652) → lock check → idat64 spawn
+
+**Prerequisite:** Install the patched `ida_mcp.py` — see [idalib/INSTALL.md](idalib/INSTALL.md)
+
+**Export differences vs headless idat64:**
+
+| Data | idat64 headless | ida_mcp plugin |
+|---|---|---|
+| Functions, call graph, CFG | ✅ | ✅ |
+| Pseudocode (Hex-Rays) | ✅ | ✅ |
+| Structures (struct/union) | ❌ | ✅ |
+| Enums | ❌ | ✅ |
+| Comments | ❌ | ✅ |
+| Function types (thunk/leaf/…) | ❌ | ✅ |
 
 ## Available Tools
 
 ### Export
-- `export_idb_to_diaphora` — Exports `.i64`/`.idb` to SQLite via `idat.exe` (headless)
+- `export_idb_to_diaphora` — Exports `.i64`/`.idb` to SQLite.
+  **Priority:** ① ida_mcp plugin (port 13337) → ② GUI listener (port 28652) → ③ idat64 headless.
+  When ida_mcp is active, export runs inside the existing IDA — no license conflict, richer data (structures, enums, comments).
 - `batch_export_and_diff` — Full pipeline: export primary → export secondary → diff → summary
 
 ### Diff
@@ -83,8 +109,11 @@ summarize_patch(results_path="old_vs_new.diaphora")
 
 ## Technical Details
 
-- **GUI Integration (XML-RPC)**: The plugin `diaphora_gui_listener.py` opens port `28652` inside active GUI IDA Pro sessions. The MCP server checks this port first. If alive, the export is executed inside the GUI.
+- **ida-pro-mcp integration (HTTP)**: When the patched `ida_mcp.py` plugin is active inside IDA GUI, `export_idb_to_diaphora` sends `POST /diaphora/export` to `127.0.0.1:13337`. The export runs in a background thread inside the existing IDA process — **no second license needed**, no session loss. Export includes structures, enums, and comments (not available via headless idat64).
+- **GUI Integration (XML-RPC)**: The plugin `diaphora_gui_listener.py` opens port `28652` inside active GUI IDA Pro sessions. This is the second priority fallback if ida_mcp is not installed.
 - **Headless export** uses Diaphora's built-in environment variables (`DIAPHORA_AUTO`, `DIAPHORA_EXPORT_FILE`, `DIAPHORA_USE_DECOMPILER`, `DIAPHORA_FUNCTION_SUMMARIES_ONLY`).
-- `idat.exe` is run via the wrapper script `_diaphora_headless.py`.
-- **Export Timeout**: Set to 14,400 seconds (4 hours) to support large binaries in detailed mode. Diff timeout: 1 hour (3600 seconds). Watchdog disk inactivity check triggers after 120 seconds.
+- `idat.exe` is run via the wrapper script `_diaphora_headless.py` (third priority fallback).
+- **Export Timeout**: 14,400 seconds (4 hours) for idat headless; 600 seconds (10 min) for ida_mcp plugin.
+- **Diff timeout**: 1 hour (3600 seconds). Watchdog disk inactivity check triggers after 120 seconds.
 - Recursion limit is automatically set to `100000` to prevent recursion errors on large call graphs.
+- **ida_mcp patched plugin** at [idalib/ida_mcp.py](idalib/ida_mcp.py) — see [idalib/INSTALL.md](idalib/INSTALL.md) for installation.
