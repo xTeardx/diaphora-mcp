@@ -223,7 +223,7 @@ Tools like `analyze_diff_results`, `compare_functions`, and `find_function_match
 ## Examples
 
 To see Diaphora MCP in action, check out the following examples:
-- [Cross-Binary Function Matching with Diaphora + idalib-mcp](examples/idalib_mcp_matching.md): A step-by-step guide to matching functions between differently-compiled versions of the same library, extracting address pairs via SQLite, and transferring reverse-engineering metadata headlessly.
+- [Diffing sqlite3.dll (Python vs AIMP)](examples/sqlite3_example.md): A step-by-step guide to exporting, diffing, and comparing functions with different addresses using real-world DLLs on your system.
 
 ## AI Agent Guidelines (Important)
 
