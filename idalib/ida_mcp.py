@@ -6,7 +6,9 @@ It loads the actual implementation from the ida_mcp package.
 
 import sys
 import os
+import re
 import json
+import uuid
 import sqlite3
 import threading
 import hashlib
@@ -492,6 +494,33 @@ def _export_diaphora(output_path: str, opts: dict) -> str:
     return output_path
 
 
+# ---------------------------------------------------------------------------
+# Diaphora export task management
+# ---------------------------------------------------------------------------
+
+EXPORT_TASKS: dict[str, dict] = {}
+"""Holds export results keyed by task_id.  A missing key means 'in progress'."""
+
+
+def _auto_decompiler(opts: dict) -> dict:
+    """Auto-detect decompiler preference if not explicitly set.
+
+    For databases with < 25 000 functions the decompiler is enabled by
+    default to give richer pseudocode.  Larger databases keep it off to
+    avoid the significant per-function cost of Hex-Rays decompilation.
+    """
+    if opts.get("use_decompiler") is not None:
+        return opts  # Explicit agent preference, honour it
+
+    try:
+        import idautils
+        total = len(list(idautils.Functions()))
+        opts["use_decompiler"] = total < 25_000
+    except Exception:
+        opts["use_decompiler"] = False
+    return opts
+
+
 CONFIG_ACTION_ID = "mcp:configure"
 CONFIG_ACTION_LABEL = "MCP Configuration"
 
@@ -690,12 +719,25 @@ class MCP(idaapi.plugin_t):
 
         # ── Diaphora-aware request handler ──
         class _DiaphoraHandler(IdaMcpHttpRequestHandler):
-            """Extends the MCP HTTP handler with /diaphora/export and /diaphora/health."""
+            """Extends the MCP HTTP handler with Diaphora export endpoints.
+
+            POST /diaphora/export       — starts an export task, returns task_id
+            GET  /diaphora/export/<id>  — poll for task result
+            GET  /diaphora/health       — health check
+            """
 
             def do_GET(self):
                 parsed = urlparse(self.path)
-                if parsed.path == "/diaphora/health":
+                path = parsed.path
+
+                if path == "/diaphora/health":
                     return self._handle_diaphora_health()
+
+                # Poll: GET /diaphora/export/<task_id>
+                m = re.match(r"^/diaphora/export/([a-f0-9-]+)$", path)
+                if m:
+                    return self._handle_diaphora_poll(m.group(1))
+
                 super().do_GET()
 
             def do_POST(self):
@@ -704,16 +746,19 @@ class MCP(idaapi.plugin_t):
                     return self._handle_diaphora_export()
                 super().do_POST()
 
-            def _handle_diaphora_health(self):
-                body = json.dumps({
-                    "ok": True,
-                    "capabilities": ["diaphora/export"],
-                }).encode("utf-8")
-                self.send_response(200)
+            def _send_json(self, data: dict, status: int = 200):
+                body = json.dumps(data).encode("utf-8")
+                self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            def _handle_diaphora_health(self):
+                self._send_json({
+                    "ok": True,
+                    "capabilities": ["diaphora/export"],
+                })
 
             def _handle_diaphora_export(self):
                 if not self._check_api_request():
@@ -725,41 +770,51 @@ class MCP(idaapi.plugin_t):
                     raw = self.rfile.read(length) if length > 0 else b"{}"
                     opts = json.loads(raw) if raw else {}
                 except Exception as e:
-                    self.send_error(400, f"Invalid request body: {e}")
+                    self._send_json({"ok": False, "error": f"Invalid request: {e}"}, 400)
                     return
 
                 output = opts.get("output_path") or (
                     os.path.splitext(idaapi.get_idb_path())[0] + ".diaphora.sqlite"
                 )
 
-                result = {}
-                event = threading.Event()
+                # Auto-detect decompiler preference when not explicitly set
+                opts = _auto_decompiler(opts)
+                print(
+                    f"[Diaphora] Export to {output} "
+                    f"(decompiler={'on' if opts.get('use_decompiler') else 'off'})"
+                )
 
-                class _ExportThread(threading.Thread):
-                    def run(self):
-                        try:
-                            path = _export_diaphora(output, opts)
-                            result["ok"] = True
-                            result["path"] = path
-                        except Exception as e:
-                            result["ok"] = False
-                            result["error"] = str(e)
-                        finally:
-                            event.set()
+                task_id = str(uuid.uuid4())
 
-                _ExportThread(daemon=True).start()
-                event.wait(timeout=600)
+                def _run_task():
+                    # This runs on the main IDA thread via execute_sync
+                    try:
+                        path = _export_diaphora(output, opts)
+                        EXPORT_TASKS[task_id] = {"ok": True, "path": path}
+                        print(f"[Diaphora] Export complete: {path}")
+                    except Exception as e:
+                        EXPORT_TASKS[task_id] = {"ok": False, "error": str(e)}
+                        print(f"[Diaphora] Export failed: {e}")
+                    finally:
+                        idaapi.process_ui_action("Refresh")
+                    return 0
 
-                if not event.is_set():
-                    result["ok"] = False
-                    result["error"] = "Export timed out after 600 seconds"
+                def _worker():
+                    # Schedule the export on the main IDA thread with MFF_READ
+                    # (read-only — does not block the GUI event loop)
+                    idaapi.execute_sync(_run_task, idaapi.MFF_READ)
 
-                resp = json.dumps(result).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(resp)))
-                self.end_headers()
-                self.wfile.write(resp)
+                threading.Thread(target=_worker, daemon=True).start()
+                self._send_json({"ok": True, "task_id": task_id})
+
+            def _handle_diaphora_poll(self, task_id: str):
+                if task_id not in EXPORT_TASKS:
+                    self._send_json({"ok": True, "done": False})
+                    return
+
+                result = dict(EXPORT_TASKS[task_id])
+                result["done"] = True
+                self._send_json(result)
 
         port = self.port
         max_port = port + 100

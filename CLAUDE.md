@@ -21,9 +21,11 @@ When **ida-pro-mcp** (pip package) is installed and its `ida_mcp.py` plugin is a
 
 **How it works:**
 1. `run_export()` → `_try_via_plugin()` probes `GET /diaphora/health` on port 13337
-2. If the endpoint responds → `POST /diaphora/export` with export options
-3. IDA's background thread runs `_export_diaphora()` via IDAPython (full data: functions, CFG, pseudocode, strings, constants, imports, structures, enums, comments)
-4. If the plugin is unreachable → falls through to GUI listener (port 28652) → lock check → idat64 spawn
+2. If the endpoint responds → `POST /diaphora/export` (returns `task_id` immediately)
+3. Client polls `GET /diaphora/export/<task_id>` every 2s until `done == true`
+4. Inside IDA: export runs on the main thread via `idaapi.execute_sync(…, MFF_READ)` — does **not** block the GUI
+5. `process_ui_action("Refresh")` in `finally` — prevents GUI freeze after export
+6. If the plugin is unreachable → falls through to GUI listener (port 28652) → lock check → idat64 spawn
 
 **Prerequisite:** Install the patched `ida_mcp.py` — see [idalib/INSTALL.md](idalib/INSTALL.md)
 

@@ -148,29 +148,31 @@ python -m diaphora_mcp call export_idb_to_diaphora --idb-path /path/to/binary.i6
 
 ---
 
-## File Inventory
-
-| File | Source | Destination |
-|---|---|---|
-| `idalib/ida_mcp.py` | This repo | `…/site-packages/ida_pro_mcp/ida_mcp.py` (replace) |
-
-**No other files need to be modified.**
-
----
-
 ## How it works (for the AI agent)
+
+### Export flow
 
 1. **diaphora-mcp** calls `export_idb_to_diaphora(idb_path)`
 2. `run_export()` → `_try_via_plugin()` probes `GET /diaphora/health` on port 13337
-3. If the endpoint responds, it sends `POST /diaphora/export` with the export options
-4. **ida-pro-mcp** receives the request in its running HTTP server (same process as IDA GUI)
-5. A background thread calls `_export_diaphora()` which uses IDAPython to:
-   - Iterate `idautils.Functions()`
-   - Extract CFG via `ida_gdl.FlowChart()`
-   - Optionally decompile via `ida_hexrays.decompile()`
-   - Extract strings, constants, imports, structures, enums, comments
-   - Write everything to a SQLite database
-6. diaphora-mcp receives the result, verifies the DB, and returns it to the user
+3. If the endpoint responds:
+   - **`POST /diaphora/export`** — returns `{"task_id": "uuid"}` immediately (async)
+   - Polls **`GET /diaphora/export/<task_id>`** every 2 seconds until `done == true`
+4. **ida-pro-mcp** receives the POST in its running HTTP server:
+   - The export function is scheduled on the main IDA thread via **`idaapi.execute_sync(…, MFF_READ)`**
+   - `MFF_READ` does not block the GUI — IDA stays responsive
+   - After completion (or error), **`idaapi.process_ui_action("Refresh")`** is called to flush any pending UI events
+5. Results are stored in an in-memory `EXPORT_TASKS` dict keyed by `task_id`
+6. Clients poll until the result is available
+
+### Critical implementation details
+
+| Detail | Reason |
+|---|---|
+| `execute_sync(…, MFF_READ)` | Runs the export on the main IDA thread (IDAPython is not thread-safe), but does **not** hold a write lock on the IDB |
+| `process_ui_action("Refresh")` | Prevents GUI freeze after export completes or on Cancel |
+| Background `_worker` thread | The export runs in a daemon thread that calls `execute_sync` — this avoids blocking the HTTP server |
+| `uuid` task IDs | Enables multiple concurrent exports and clean polling |
+| In-memory `EXPORT_TASKS` | Results are kept until the server restarts — no filesystem pollution |
 
 ### If the plugin is not reachable
 

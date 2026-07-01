@@ -332,6 +332,10 @@ def _try_via_plugin(
 ) -> str | None:
     """Try to delegate the export to an already-running IDA via the ``ida_mcp`` plugin.
 
+    The plugin uses an asynchronous task pattern:
+      1. ``POST /diaphora/export`` → returns ``{"task_id": "…"}`` immediately
+      2. Poll ``GET /diaphora/export/<task_id>`` until ``done == True``
+
     Returns:
         * ``None`` on success (output written to *output_path*).
         * A non-empty error string on failure.
@@ -358,12 +362,11 @@ def _try_via_plugin(
         "summaries_only": summaries_only,
     }
 
+    # ── Step 1: POST → start the export task ──
     try:
-        resp = requests.post(_PLUGIN_EXPORT_URL, json=body, timeout=600)
+        resp = requests.post(_PLUGIN_EXPORT_URL, json=body, timeout=30)
         resp.raise_for_status()
-        result = resp.json()
-    except requests.Timeout:
-        return "Export via ida_mcp plugin timed out after 600s."
+        task_data = resp.json()
     except requests.ConnectionError as e:
         return f"ida_mcp plugin connection failed: {e}"
     except requests.RequestException as e:
@@ -371,24 +374,43 @@ def _try_via_plugin(
     except Exception as e:
         return f"ida_mcp plugin unexpected error: {e}"
 
-    if not result.get("ok"):
-        err = result.get("error", "unknown error")
-        return f"Export via ida_mcp plugin failed: {err}"
+    if not task_data.get("ok"):
+        return f"ida_mcp plugin rejected export: {task_data.get('error', 'unknown')}"
 
-    # Verify the output database
-    reported_path = result.get("path", output_path)
-    if check_db(reported_path) is not None:
-        return f"ida_mcp plugin reported success but database at {reported_path} is invalid."
+    task_id = task_data.get("task_id")
+    if not task_id:
+        return "ida_mcp plugin returned ok but no task_id"
 
-    # If plugin wrote to a different path than expected, copy it
-    if reported_path != output_path:
+    # ── Step 2: Poll until done (max 600 seconds) ──
+    poll_url = f"{_PLUGIN_EXPORT_URL}/{task_id}"
+    deadline = time.monotonic() + 600
+
+    while time.monotonic() < deadline:
         try:
-            import shutil
-            shutil.copy2(reported_path, output_path)
-        except OSError as e:
-            return f"Failed to copy export result from {reported_path} to {output_path}: {e}"
+            poll_resp = requests.get(poll_url, timeout=10)
+            poll_resp.raise_for_status()
+            status = poll_resp.json()
+        except requests.RequestException as e:
+            return f"ida_mcp plugin poll error: {e}"
 
-    return None  # success
+        if status.get("done"):
+            if status.get("ok"):
+                reported_path = status.get("path", output_path)
+                if check_db(reported_path) is not None:
+                    return f"ida_mcp plugin reported success but database at {reported_path} is invalid."
+                if reported_path != output_path:
+                    try:
+                        import shutil
+                        shutil.copy2(reported_path, output_path)
+                    except OSError as e:
+                        return f"Failed to copy export result: {e}"
+                return None  # success
+            else:
+                return f"Export via ida_mcp plugin failed: {status.get('error', 'unknown error')}"
+
+        time.sleep(2)
+
+    return "Export via ida_mcp plugin timed out after 600s."
 
 
 def _is_ida_running() -> list[tuple[int, str]]:
