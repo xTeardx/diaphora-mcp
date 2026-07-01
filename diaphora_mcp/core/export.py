@@ -53,36 +53,13 @@ async def run_export(
         except Exception:
             summaries_only = False
 
-    # 0. Try ida_mcp plugin first (export inside already-running IDA)
-    plugin_res = _try_via_plugin(idb_path, output_path, use_decompiler, summaries_only)
-    if plugin_res != "NO_PLUGIN":
-        # None = success (output written to output_path),
-        # str  = error from plugin (excluding "NO_PLUGIN" which falls through)
-        return plugin_res
-
+    # 0. Try via plugin disabled to guarantee official Diaphora schema export
+    pass
 
     # XML-RPC GUI fallback removed to prevent GUI freezes and incorrect database exports
 
-    # ── 2. Check if database lock files are held by a running GUI instance ──
-    base = os.path.splitext(idb_path)[0]
-    lock_files = [base + ext for ext in [".id0", ".id1", ".id2", ".nam", ".til"]]
-    is_active_in_gui = False
-    for lf in lock_files:
-        if os.path.isfile(lf):
-            try:
-                with open(lf, "r+b") as f:
-                    pass
-            except OSError:
-                is_active_in_gui = True
-                break
-
-    if is_active_in_gui:
-        return (
-            f"The database {os.path.basename(idb_path)} is currently locked/active. "
-            f"It is likely open in GUI IDA Pro. Please close it in the GUI first, "
-            f"or manually export it to SQLite from the GUI (File -> Diaphora -> Export) "
-            f"and use the resulting SQLite database."
-        )
+    # Lock file checks and temporary file copying are handled by the caller export_idb_to_diaphora
+    pass
 
     # Running IDA check bypassed to allow headless exports of other databases
     pass
@@ -599,7 +576,7 @@ async def export_idb_to_diaphora(
     """Export an IDB/i64 database to Diaphora SQLite format using IDA headless.
 
     NOTE: Enabling `use_decompiler=True` will include Hex-Rays pseudocode in
-    the export, but this SIGNIFICANTLY increases export time — expect 5–30+
+    the export, but this SIGNIFICANTLY increases export time – expect 5–30+
     minutes for large binaries. Default is False for fast export; re-export
     with decompiler only if pseudocode analysis is needed.
     """
@@ -608,7 +585,7 @@ async def export_idb_to_diaphora(
 
     if use_decompiler:
         log_warn = (
-            "WARNING: Decompiler enabled — export will be significantly slower "
+            "WARNING: Decompiler enabled – export will be significantly slower "
             "(5–30+ min for large binaries). Consider setting use_decompiler=False "
             "for a fast first pass (~1-2 min)."
         )
@@ -619,7 +596,45 @@ async def export_idb_to_diaphora(
         base = os.path.splitext(os.path.basename(idb_path))[0]
         output_path = os.path.join(os.path.dirname(idb_path), f"{base}.diaphora.sqlite")
 
-    err = await run_export(idb_path, output_path, use_decompiler, summaries_only)
+    # ── Check if database lock files are held by a running GUI instance ──
+    base = os.path.splitext(idb_path)[0]
+    lock_files = [base + ext for ext in [".id0", ".id1", ".id2", ".nam", ".til"]]
+    is_active_in_gui = False
+    for lf in lock_files:
+        if os.path.isfile(lf):
+            try:
+                with open(lf, "r+b") as f:
+                    pass
+            except OSError:
+                is_active_in_gui = True
+                break
+
+    temp_idb_path = None
+    target_idb_path = idb_path
+    if is_active_in_gui:
+        import shutil
+        base_name, ext = os.path.splitext(idb_path)
+        temp_idb_path = f"{base_name}_diaphora_tmp{ext}"
+        try:
+            shutil.copy2(idb_path, temp_idb_path)
+            target_idb_path = temp_idb_path
+        except Exception as e:
+            return err_json(f"Failed to create temporary copy of active database to bypass lock: {e}")
+
+    try:
+        err = await run_export(target_idb_path, output_path, use_decompiler, summaries_only)
+    finally:
+        if temp_idb_path and os.path.exists(temp_idb_path):
+            try:
+                os.remove(temp_idb_path)
+                temp_base = os.path.splitext(temp_idb_path)[0]
+                for ext in [".id0", ".id1", ".id2", ".nam", ".til"]:
+                    lf = temp_base + ext
+                    if os.path.exists(lf):
+                        os.remove(lf)
+            except Exception:
+                pass
+
     if err:
         result = {"error": err}
         if log_warn:
@@ -645,7 +660,7 @@ async def export_idb_to_diaphora(
             if _r == 0:
                 prog_warn = (
                     "Export incomplete: program table is empty. "
-                    "Diff will fail — see Problems.md #3."
+                    "Diff will fail – see Problems.md #3."
                 )
                 if "warning" in result:
                     result["warning"] += " " + prog_warn
