@@ -406,7 +406,10 @@ def _try_via_plugin(
                         return f"Failed to copy export result: {e}"
                 return None  # success
             else:
-                return f"Export via ida_mcp plugin failed: {status.get('error', 'unknown error')}"
+                err = status.get("error", "unknown error")
+                if err == "cancelled":
+                    return "Export cancelled by user during execution (Cancel was pressed in IDA GUI)."
+                return f"Export via ida_mcp plugin failed: {err}"
 
         time.sleep(2)
 

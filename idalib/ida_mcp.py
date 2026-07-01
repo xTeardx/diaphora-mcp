@@ -212,7 +212,11 @@ def _classify_function(func_ea, size, blocks, callees):
         return "unknown"
 
 
-def _export_diaphora(output_path: str, opts: dict) -> str:
+def _export_diaphora(
+    output_path: str,
+    opts: dict,
+    progress: "idaapi.timeldk_progress_t | None" = None,
+) -> str:
     """Export the currently open IDB to Diaphora-format SQLite.
 
     Args:
@@ -220,6 +224,8 @@ def _export_diaphora(output_path: str, opts: dict) -> str:
         opts: Dict with optional keys:
             - use_decompiler (bool): Include Hex-Rays pseudocode.
             - summaries_only (bool): Skip detailed ASM/bytes/blocks.
+        progress: Optional progress indicator; checked periodically
+            for user cancellation.
 
     Returns:
         The output path on success.
@@ -351,6 +357,14 @@ def _export_diaphora(output_path: str, opts: dict) -> str:
     for idx, func_ea in enumerate(idautils.Functions()):
         if idx % 100 == 0:
             print(f"[Diaphora] Exporting function {idx}/{total}")
+            if progress and progress.cancelled():
+                print("[Diaphora] Export cancelled by user")
+                conn.commit()
+                conn.close()
+                raise RuntimeError("cancelled")
+            # Refresh UI periodically so the progress bar stays visible
+            # and the main-thread event loop processes pending paints.
+            idaapi.process_ui_action("Refresh")
 
         try:
             func = ida_funcs.get_func(func_ea)
@@ -787,15 +801,24 @@ class MCP(idaapi.plugin_t):
                 task_id = str(uuid.uuid4())
 
                 def _run_task():
-                    # This runs on the main IDA thread via execute_sync
+                    """Runs on the main IDA thread via execute_sync(MFF_READ)."""
+                    progress = None
                     try:
-                        path = _export_diaphora(output, opts)
+                        progress = idaapi.timeldk_progress_t("Diaphora export")
+                        progress.show()
+                        path = _export_diaphora(output, opts, progress)
                         EXPORT_TASKS[task_id] = {"ok": True, "path": path}
                         print(f"[Diaphora] Export complete: {path}")
+                    except RuntimeError as e:
+                        err = str(e)
+                        EXPORT_TASKS[task_id] = {"ok": False, "error": err}
+                        print(f"[Diaphora] Export failed: {err}")
                     except Exception as e:
                         EXPORT_TASKS[task_id] = {"ok": False, "error": str(e)}
                         print(f"[Diaphora] Export failed: {e}")
                     finally:
+                        if progress:
+                            progress.close()
                         idaapi.process_ui_action("Refresh")
                     return 0
 
