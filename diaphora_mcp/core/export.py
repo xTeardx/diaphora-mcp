@@ -617,7 +617,7 @@ async def export_idb_to_diaphora(
 
     if not output_path:
         base = os.path.splitext(os.path.basename(idb_path))[0]
-        output_path = os.path.join(os.path.dirname(idb_path), f"{base}.sqlite")
+        output_path = os.path.join(os.path.dirname(idb_path), f"{base}.diaphora.sqlite")
 
     err = await run_export(idb_path, output_path, use_decompiler, summaries_only)
     if err:
@@ -692,8 +692,8 @@ async def batch_export_and_diff(
         output_dir = os.path.dirname(os.path.abspath(idb1_path))
     os.makedirs(output_dir, exist_ok=True)
 
-    sqlite1 = os.path.join(output_dir, f"{b1}.sqlite")
-    sqlite2 = os.path.join(output_dir, f"{b2}.sqlite")
+    sqlite1 = os.path.join(output_dir, f"{b1}.diaphora.sqlite")
+    sqlite2 = os.path.join(output_dir, f"{b2}.diaphora.sqlite")
     diff_out = os.path.join(output_dir, f"{b1}_vs_{b2}.diaphora")
 
     # Validate input files before setting up logger
