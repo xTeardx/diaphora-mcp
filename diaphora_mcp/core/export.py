@@ -13,6 +13,9 @@ import threading
 import time
 import xmlrpc.client
 
+import requests
+import psutil
+
 from ..config import IDAT_PATH, DIAPHORA_DIR, HEADLESS_WRAPPER, DIAPHORA_SCRIPT, PYTHON
 from ..utils.sqlite import check_db, check_db_for_diff, force_delete_file
 from ..utils.log import ExportLogger, OperationLogger
@@ -50,7 +53,15 @@ async def run_export(
         except Exception:
             summaries_only = False
 
-    # 1. Try exporting via active GUI IDA Pro session first
+    # ── 0. Try ida_mcp plugin first (export inside already-running IDA) ──
+    plugin_res = _try_via_plugin(idb_path, output_path, use_decompiler, summaries_only)
+    if plugin_res is not None:
+        # None = success (output written to output_path),
+        # str  = error from plugin
+        return plugin_res
+    # plugin_res == "NO_PLUGIN" → fall through
+
+    # ── 1. Try exporting via active GUI IDA Pro session (XML-RPC) ──
     try:
         client = xmlrpc.client.ServerProxy("http://127.0.0.1:28652")
         if client.ping():
@@ -76,7 +87,7 @@ async def run_export(
         # GUI server is not listening or ping failed, fall back to headless idat.exe
         pass
 
-    # 2. Check if database lock files exist and are locked by a running GUI instance of IDA
+    # ── 2. Check if database lock files are held by a running GUI instance ──
     base = os.path.splitext(idb_path)[0]
     lock_files = [base + ext for ext in [".id0", ".id1", ".id2", ".nam", ".til"]]
     is_active_in_gui = False
@@ -97,13 +108,20 @@ async def run_export(
             f"and use the resulting SQLite database."
         )
 
+    # ── 3. Check for running IDA that didn't respond via plugin ──
+    if _any_ida_running():
+        procs = _is_ida_running()
+        pid_list = ", ".join(f"{name}(PID {pid})" for pid, name in procs)
+        return (
+            f"IDA Pro is already running ({pid_list}) but the ida_mcp plugin "
+            f"did not respond on http://127.0.0.1:13337/diaphora/health.\n"
+            f"Either activate the plugin (Edit → Plugins → MCP in IDA GUI), "
+            f"or close IDA and retry."
+        )
+
+    # ── 4. Headless export via idat.exe ──
     with ExportLogger(idb_path, output_path) as log:
         _clean_stale_locks(idb_path, log)
-
-        # Ensure the Hex-Rays licence is free before spawning idat64.exe
-        license_err = _ensure_license_free(idb_path, log)
-        if license_err:
-            return license_err
 
         env = os.environ.copy()
         env["DIAPHORA_AUTO"] = "1"
@@ -275,6 +293,102 @@ async def run_export(
             pass
 
         return None  # success
+
+
+# ---------------------------------------------------------------------------
+# ida_mcp plugin integration
+# ---------------------------------------------------------------------------
+
+_PLUGIN_HEALTH_URL = "http://127.0.0.1:13337/diaphora/health"
+_PLUGIN_EXPORT_URL = "http://127.0.0.1:13337/diaphora/export"
+
+
+def _any_ida_running() -> bool:
+    """Return ``True`` if an ``ida64.exe`` or ``idat64.exe`` process is running."""
+    try:
+        for proc in psutil.process_iter(["name"]):
+            name = (proc.info["name"] or "").lower()
+            if name in ("ida64.exe", "idat64.exe"):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _ida_plugin_responding() -> bool:
+    """Return ``True`` if the ``ida_mcp`` HTTP endpoint is reachable."""
+    try:
+        resp = requests.get(_PLUGIN_HEALTH_URL, timeout=2)
+        return resp.status_code == 200
+    except requests.RequestException:
+        return False
+
+
+def _try_via_plugin(
+    idb_path: str,
+    output_path: str,
+    use_decompiler: bool,
+    summaries_only: bool | None,
+) -> str | None:
+    """Try to delegate the export to an already-running IDA via the ``ida_mcp`` plugin.
+
+    Returns:
+        * ``None`` on success (output written to *output_path*).
+        * A non-empty error string on failure.
+        * The magic value ``"NO_PLUGIN"`` when the plugin is not reachable
+          (caller should fall through to another method).
+    """
+    # Fast path: no IDA running at all → skip the HTTP probe
+    if not _any_ida_running():
+        return "NO_PLUGIN"
+
+    if not _ida_plugin_responding():
+        return "NO_PLUGIN"
+
+    if summaries_only is None:
+        try:
+            idb_size = os.path.getsize(idb_path)
+            summaries_only = idb_size > 100 * 1024 * 1024
+        except Exception:
+            summaries_only = False
+
+    body = {
+        "output_path": output_path,
+        "use_decompiler": use_decompiler,
+        "summaries_only": summaries_only,
+    }
+
+    try:
+        resp = requests.post(_PLUGIN_EXPORT_URL, json=body, timeout=600)
+        resp.raise_for_status()
+        result = resp.json()
+    except requests.Timeout:
+        return "Export via ida_mcp plugin timed out after 600s."
+    except requests.ConnectionError as e:
+        return f"ida_mcp plugin connection failed: {e}"
+    except requests.RequestException as e:
+        return f"ida_mcp plugin HTTP error: {e}"
+    except Exception as e:
+        return f"ida_mcp plugin unexpected error: {e}"
+
+    if not result.get("ok"):
+        err = result.get("error", "unknown error")
+        return f"Export via ida_mcp plugin failed: {err}"
+
+    # Verify the output database
+    reported_path = result.get("path", output_path)
+    if check_db(reported_path) is not None:
+        return f"ida_mcp plugin reported success but database at {reported_path} is invalid."
+
+    # If plugin wrote to a different path than expected, copy it
+    if reported_path != output_path:
+        try:
+            import shutil
+            shutil.copy2(reported_path, output_path)
+        except OSError as e:
+            return f"Failed to copy export result from {reported_path} to {output_path}: {e}"
+
+    return None  # success
 
 
 def _is_ida_running() -> list[tuple[int, str]]:
