@@ -225,6 +225,23 @@ Tools like `analyze_diff_results`, `compare_functions`, and `find_function_match
 To see Diaphora MCP in action, check out the following examples:
 - [Diffing sqlite3.dll (Python vs AIMP)](examples/sqlite3_example.md): A step-by-step guide to exporting, diffing, and comparing functions with different addresses using real-world DLLs on your system.
 
+## AI Agent Guidelines (Important)
+
+If you are an AI coding assistant (like Claude Code) using this protocol, keep the following compatibility rules in mind:
+
+1. **GUI vs. Headless Export Schemas**:
+   - Exporting via an active GUI session (`ida_mcp.py` plugin) produces a custom schema containing tables like `calls`, `strings`, `structures`, but **no `program` table**.
+   - Headless export (via `idat.exe`) produces the official Diaphora schema containing the `program` table.
+   - **Crucial**: The diff engine (`diff_diaphora_dbs`) requires the official schema. **Always export headlessly if you intend to compare/diff databases**.
+   
+2. **Locked Databases in GUI**:
+   - A database currently open in GUI IDA Pro is locked. Attempting to export it headlessly will fail.
+   - If you need to diff the currently open database, ask the user to close it in the GUI (or open a dummy database) to release the file lock, then trigger a headless export.
+
+3. **Avoid Database Name Collisions**:
+   - Diaphora export databases default to `<basename>.diaphora.sqlite`.
+   - Never use `<basename>.sqlite` for Diaphora exports, as this conflicts with the internal cache database created by the `ida-pro-mcp` supervisor.
+
 ## License
 
 MIT
