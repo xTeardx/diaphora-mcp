@@ -108,6 +108,32 @@ summarize_patch(results_path="old_vs_new.diaphora")
 - **Limit details on large databases**: If the source `.i64`/`.idb` file is larger than **100 MB** or contains **> 100,000 functions**, you **MUST** use `summaries_only=True` (or leave as `None` to auto-detect). This prevents huge database size bloat, speeds up export time from 1.5 hours to **1-2 minutes**, and reduces SQLite database size from 300+ MB to 15 MB.
 - **Decompiler usage**: For large binaries, the Hex-Rays decompiler **should be turned off** (`use_decompiler=False`), otherwise headless export might take over 5 hours.
 - **Work in summaries_only mode**: In `summaries_only` mode, detailed assembly/pseudocode diff is not stored. Use live IDA Pro MCP tools (`ida-pro-mcp`) to guide the user in the GUI to analyze the target address.
+- **MCP client timeout**: Claude Code and other MCP clients have a built-in timeout for tool calls (typically 5–20 minutes). If the user works with large binaries (>100 MB) and the export might exceed this, **ask the user to increase the MCP timeout** in their MCP client config (see below). Without this, the client may kill the session mid-export even though the server is still working.
+
+### Increasing MCP Timeout
+
+For Claude Code, add or modify the `timeout` field in `~/.claude.json` (or `.mcp.json`) under the `diaphora` server config:
+
+```json
+"mcpServers": {
+  "diaphora": {
+    "command": "python",
+    "args": ["path/to/diaphora_mcp_server.py"],
+    "env": {
+      "IDAT_PATH": "C:\\Program Files\\IDA Pro 9.3\\idat.exe",
+      "DIAPHORA_DIR": "C:\\Program Files\\IDA Pro 9.3\\plugins\\diaphora-3.4.1"
+    },
+    "timeout": 7200  ← increase to 2 hours for large binaries
+  }
+}
+```
+
+For other MCP-compatible clients (Claude Desktop, Continue.dev, etc.), set the equivalent timeout/requestTimeout option to at least **7200** (2 hours) when working with binaries over 100 MB.
+
+If the export takes longer than expected, the AI agent can split the work:
+1. Export the binary with `summaries_only=True` and `use_decompiler=False` first (fast — minutes)
+2. Analyse results from the diff
+3. Only re-export with decompiler for SPECIFIC functions of interest (fast per-function)
 
 ## Technical Details
 

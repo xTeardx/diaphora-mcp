@@ -54,11 +54,13 @@ pip install -e .
         "IDAT_PATH": "C:\\Program Files\\IDA Pro 9.3\\idat.exe",
         "DIAPHORA_DIR": "C:\\Program Files\\IDA Pro 9.3\\plugins\\diaphora-3.4.1"
       },
-      "timeout": 3600
+      "timeout": 7200
     }
   }
 }
 ```
+
+> **Примечание:** Для очень больших бинарников (>100 MB) убедитесь, что `timeout` не меньше **7200** (2 часа).
 
 ### 4. Подготовка баз для диффа
 

@@ -54,11 +54,13 @@ For Claude Code, you can specify them in `~/.claude.json` (or the corresponding 
         "IDAT_PATH": "C:\\Program Files\\IDA Pro 9.3\\idat.exe",
         "DIAPHORA_DIR": "C:\\Program Files\\IDA Pro 9.3\\plugins\\diaphora-3.4.1"
       },
-      "timeout": 3600
+      "timeout": 7200
     }
   }
 }
 ```
+
+> **Note:** For very large binaries (>100 MB), ensure `timeout` is at least **7200** (2 hours).
 
 ### 4. Preparing Databases for Diffing
 
