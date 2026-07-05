@@ -25,7 +25,7 @@ def score_change(result_row: dict, sec_match: bool, complexity_chg: int,
     score += type_w.get(mtype, 15)
 
     if mtype == "partial":
-        score += (1.0 - ratio) * 40 if ratio > 0 else 20
+        score += (1.0 - ratio) * 40 if ratio >= 0 else 40
     elif mtype == "unreliable":
         score += 15
 
@@ -38,7 +38,7 @@ def score_change(result_row: dict, sec_match: bool, complexity_chg: int,
     n1 = int(result_row.get("nodes1", 0) or 0)
     n2 = int(result_row.get("nodes2", 0) or 0)
     if n1 and n2:
-        delta = abs(n2 - n1) / max(n1, 1)
+        delta = abs(n2 - n1) / max(n1, n2, 1)
         score += min(delta * 20, 20)
 
     return round(min(score, 100), 1)
@@ -95,6 +95,10 @@ def rank_changes(
         sec_old = match_security_keywords(name1, pseudo1, "")
         sec_new = match_security_keywords(name2, pseudo2, "")
         sec_match = sec_old["matched"] or sec_new["matched"]
+
+        # Populate basic block counts so score_change can read them
+        row["nodes1"] = f1.get("nodes", 0) if f1 else 0
+        row["nodes2"] = f2.get("nodes", 0) if f2 else 0
 
         pseudo_diff = pseudocode_simple_diff(pseudo1, pseudo2)
         score = score_change(row, sec_match, complexity_chg, len(pseudo_diff))

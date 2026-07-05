@@ -366,9 +366,9 @@ def find_function_match(
                 score += 0.10
             if feat1["loops"] == feat2["loops"]:
                 score += 0.05
-            if feat1["mnemonics"] == feat2["mnemonics"]:
+            if feat1["mnemonics"] and feat1["mnemonics"] == feat2["mnemonics"]:
                 score += 0.20
-            if feat1["constants"] == feat2["constants"]:
+            if feat1["constants"] and feat1["constants"] == feat2["constants"]:
                 score += 0.15
             if feat1["prototype"] and feat1["prototype"] == feat2["prototype"]:
                 score += 0.20
@@ -531,7 +531,7 @@ def explain_similarity(
     # 2. Nodes
     n1, n2 = features1["nodes"], features2["nodes"]
     node_match = n1 == n2
-    node_sim = min(n1, n2) / max(n1, 1)
+    node_sim = min(n1, n2) / max(n1, n2, 1)
     factors.append({
         "factor": "cfg_nodes",
         "weight": 15,

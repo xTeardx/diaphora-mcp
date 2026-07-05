@@ -212,6 +212,11 @@ def find_patch_root(
         cur = conn.cursor()
         cur.execute("SELECT * FROM results")
         results = [dict(r) for r in cur.fetchall()]
+        try:
+            cur.execute("SELECT * FROM unmatched")
+            unmatched = [dict(r) for r in cur.fetchall()]
+        except sqlite3.OperationalError:
+            unmatched = []
     finally:
         conn.close()
 
@@ -230,6 +235,13 @@ def find_patch_root(
             changed_addrs.add(a2n)
             if a2n not in addr_to_result:
                 addr_to_result[a2n] = r
+
+    # Include newly added functions (secondary unmatched) as changed addresses
+    for u in unmatched:
+        if u.get("type") == "secondary":
+            addr = u.get("address", "")
+            if addr:
+                changed_addrs.add(norm_addr(addr))
 
     candidates = []
     conn2 = sqlite3.connect(db2_path)
@@ -254,8 +266,9 @@ def find_patch_root(
             callees_changed = callee_addrs & changed_addrs
             pct = len(callees_changed) / max(len(callee_addrs), 1)
 
+            # Cap the changed callees bonus at 75 points (5 changed callees)
             root_score = round(
-                (len(callees_changed) * 15)
+                (min(len(callees_changed), 5) * 15)
                 + (pct * 30)
                 + min(insns or 0, 200) * 0.1
                 + (20 if (cc or 0) > 10 else 0),
@@ -280,7 +293,8 @@ def find_patch_root(
                 "callers_total": len(caller_addrs),
                 "callers_changed": len(callers_changed),
                 "root_score": root_score,
-                "is_root_candidate": root_score >= 30 and pct > 0.3,
+                # Filter out wrappers/leaves by requiring at least 3 callees to be a root candidate
+                "is_root_candidate": root_score >= 30 and pct > 0.3 and len(callee_addrs) >= 3,
             })
     finally:
         conn2.close()

@@ -230,6 +230,12 @@ def detect_security_patches(
 
     security_patches = []
 
+    # Batch-load all functions to avoid slow O(N) database connections
+    addrs1 = [r.get("address", "") for r in results]
+    addrs2 = [r.get("address2", "") for r in results]
+    funcs1 = get_funcs_batch(db1_path, addrs1) if db1_path else {}
+    funcs2 = get_funcs_batch(db2_path, addrs2) if db2_path else {}
+
     for row in results:
         addr1 = row.get("address", "")
         addr2 = row.get("address2", "")
@@ -239,8 +245,8 @@ def detect_security_patches(
         mtype = row.get("type", "")
 
         pseudo1 = pseudo2 = ""
-        f1 = get_func(db1_path, address=addr1) if db1_path and addr1 else None
-        f2 = get_func(db2_path, address=addr2) if db2_path and addr2 else None
+        f1 = funcs1.get(addr1) if addr1 else None
+        f2 = funcs2.get(addr2) if addr2 else None
 
         if f1:
             pseudo1 = f1.get("pseudocode", "") or ""
@@ -275,7 +281,9 @@ def detect_security_patches(
         if any(kw in added_text.lower() for kw in ["sizeof", "memcpy_s", "memmove",
                                                      "strncpy", "strncat", "snprintf"]):
             match_indicators.append("memory_safety")
-        if any(kw in removed_lines or kw in added_lines for kw in ["memcpy", "strcpy", "sprintf", "gets", "scanf"]):
+        removed_text = " ".join(removed_lines)
+        added_text_all = " ".join(added_lines)
+        if any(kw in removed_text or kw in added_text_all for kw in ["memcpy", "strcpy", "sprintf", "gets", "scanf"]):
             match_indicators.append("unsafe_func_removed")
 
         # 6. Crypto changes

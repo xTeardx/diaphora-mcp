@@ -131,8 +131,9 @@ def get_funcs_batch(db_path: str, addresses: list[str]) -> dict[str, dict]:
             for row in cur.fetchall():
                 fd = dict(row)
                 addr = fd.get("address", "")
-                if addr:
-                    result[addr] = fd
+                orig = norm.get(addr, addr)
+                if orig:
+                    result[orig] = fd
             return result
         finally:
             conn.close()
