@@ -39,7 +39,7 @@ class DatabaseRepository:
             cur = conn.cursor()
             cur.execute(
                 "SELECT address, name, nodes, edges, instructions, "
-                "cyclical_complexity, prototype, bytes_hash "
+                "cyclomatic_complexity, prototype, bytes_hash "
                 "FROM functions WHERE address = ?",
                 (addr,),
             )

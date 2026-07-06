@@ -34,3 +34,6 @@ debug_*.py
 # Python package build artifacts
 *.egg-info/
 *.egg-info
+
+# Local dev and binary fixes folder
+Fixes/

@@ -12,8 +12,25 @@ import time
 
 
 def norm_addr(addr: str) -> str:
-    """Normalize a hex address: strip whitespace, lowercase, remove 0x prefix."""
-    return addr.strip().lower().removeprefix("0x")
+    """Normalize a hex or decimal address to a lowercase hex string (no 0x prefix)."""
+    s = addr.strip().lower()
+    if s.isdigit() and int(s) > 1000000:
+        return hex(int(s)).removeprefix("0x")
+    return s.removeprefix("0x")
+
+
+def _detect_decimal(conn) -> bool:
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT address FROM functions LIMIT 1")
+        row = cur.fetchone()
+        if row and row[0]:
+            s = row[0]
+            if s.isdigit() and int(s) > 1000000:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def force_delete_file(path: str, retries: int = 3) -> bool:
@@ -122,18 +139,34 @@ def get_funcs_batch(db_path: str, addresses: list[str]) -> dict[str, dict]:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
 
-            placeholders = ",".join("?" for _ in norm)
+            use_decimal = _detect_decimal(conn)
+            db_keys = []
+            db_to_orig = {}
+            for k, orig in norm.items():
+                if use_decimal:
+                    try:
+                        dec = str(int(k, 16))
+                        db_keys.append(dec)
+                        db_to_orig[dec] = orig
+                    except ValueError:
+                        db_keys.append(k)
+                        db_to_orig[k] = orig
+                else:
+                    db_keys.append(k)
+                    db_to_orig[k] = orig
+
+            placeholders = ",".join("?" for _ in db_keys)
             cur.execute(
                 f"SELECT address, name, nodes, edges, cyclomatic_complexity, "
                 f"instructions, pseudocode, assembly, prototype, bytes_hash "
                 f"FROM functions WHERE address IN ({placeholders})",
-                list(norm.keys()),
+                db_keys,
             )
             result = {}
             for row in cur.fetchall():
                 fd = dict(row)
                 addr = fd.get("address", "")
-                orig = norm.get(addr, addr)
+                orig = db_to_orig.get(addr, addr)
                 if orig:
                     result[orig] = fd
             return result
@@ -157,6 +190,11 @@ def get_func(db_path: str, address: str = "", name: str = "") -> dict | None:
         cur = conn.cursor()
         if address:
             addr = norm_addr(address)
+            if _detect_decimal(conn):
+                try:
+                    addr = str(int(addr, 16))
+                except ValueError:
+                    pass
             cur.execute("SELECT * FROM functions WHERE address = ?", (addr,))
         elif name:
             cur.execute("SELECT * FROM functions WHERE name = ?", (name,))
@@ -197,6 +235,11 @@ def get_callgraph(db_path: str, func_address: str) -> dict:
         cur = conn.cursor()
 
         addr = norm_addr(func_address)
+        if _detect_decimal(conn):
+            try:
+                addr = str(int(addr, 16))
+            except ValueError:
+                pass
         cur.execute("SELECT id FROM functions WHERE address = ?", (addr,))
         row = cur.fetchone()
         if not row:
@@ -209,10 +252,11 @@ def get_callgraph(db_path: str, func_address: str) -> dict:
             "SELECT address, type FROM callgraph WHERE func_id = ?", (fid,)
         )
         for addr_str, ctype in cur.fetchall():
+            norm_addr_str = norm_addr(addr_str)
             if ctype == "caller":
-                callers.append(addr_str)
+                callers.append(norm_addr_str)
             else:
-                callees.append(addr_str)
+                callees.append(norm_addr_str)
         return {"callers": callers, "callees": callees}
     finally:
         conn.close()
@@ -226,14 +270,31 @@ def resolve_func_names(db_path: str, addresses: list[str]) -> dict:
     try:
         cur = conn.cursor()
         norm = {norm_addr(a): a for a in addresses}
-        placeholders = ",".join("?" for _ in norm)
+        use_decimal = _detect_decimal(conn)
+        db_keys = []
+        db_to_orig = {}
+        for k, orig in norm.items():
+            if use_decimal:
+                try:
+                    dec = str(int(k, 16))
+                    db_keys.append(dec)
+                    db_to_orig[dec] = orig
+                except ValueError:
+                    db_keys.append(k)
+                    db_to_orig[k] = orig
+            else:
+                db_keys.append(k)
+                db_to_orig[k] = orig
+
+        placeholders = ",".join("?" for _ in db_keys)
         cur.execute(
             f"SELECT address, name FROM functions WHERE address IN ({placeholders})",
-            list(norm.keys()),
+            db_keys,
         )
         result = {}
         for row in cur.fetchall():
-            orig = norm.get(row[0], row[0])
+            addr = row[0]
+            orig = db_to_orig.get(addr, addr)
             result[orig] = row[1]
         return result
     finally:

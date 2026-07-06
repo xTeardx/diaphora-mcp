@@ -10,6 +10,7 @@ import sqlite3
 
 from ..utils.sqlite import check_db, get_func, get_callgraph, resolve_func_names, get_underlying_db_paths, norm_addr
 from ..utils.format import dumps, err_json
+from .repository import IndexedDatabase, CallGraphEngine
 
 
 def build_call_path(db_path: str, start_addr: str, depth: int,
@@ -244,24 +245,21 @@ def find_patch_root(
                 changed_addrs.add(norm_addr(addr))
 
     candidates = []
-    conn2 = sqlite3.connect(db2_path)
     try:
-        cur2 = conn2.cursor()
+        indexed_db2 = IndexedDatabase(db2_path)
+        cg_engine2 = CallGraphEngine(db2_path)
+        
         for addr in changed_addrs:
-            cur2.execute(
-                "SELECT id, name, instructions, cyclomatic_complexity FROM functions WHERE address = ?",
-                (addr,)
-            )
-            row = cur2.fetchone()
-            if not row:
+            meta = indexed_db2.get_metadata(addr)
+            if not meta:
                 continue
-            fid, fname, insns, cc = row
+            fname = indexed_db2.get_name(addr) or f"sub_{addr}"
+            insns = meta.get("instructions", 0)
+            cc = meta.get("cyclomatic_complexity", 0)
 
-            cur2.execute(
-                "SELECT address FROM callgraph WHERE func_id = ? AND type = 'callee'",
-                (fid,)
-            )
-            callee_addrs = {norm_addr(r[0]) for r in cur2.fetchall()}
+            # Get in-memory caller/callee sets
+            callee_addrs = set(cg_engine2.adjacency.get(addr, []))
+            caller_addrs = set(cg_engine2.callers.get(addr, []))
 
             callees_changed = callee_addrs & changed_addrs
             pct = len(callees_changed) / max(len(callee_addrs), 1)
@@ -275,16 +273,11 @@ def find_patch_root(
                 1,
             )
 
-            cur2.execute(
-                "SELECT address FROM callgraph WHERE func_id = ? AND type = 'caller'",
-                (fid,)
-            )
-            caller_addrs = {norm_addr(r[0]) for r in cur2.fetchall()}
             callers_changed = caller_addrs & changed_addrs
 
             candidates.append({
                 "address": addr,
-                "name": fname or f"sub_{addr}",
+                "name": fname,
                 "instructions": insns,
                 "complexity": cc,
                 "callees_total": len(callee_addrs),
@@ -296,8 +289,9 @@ def find_patch_root(
                 # Filter out wrappers/leaves by requiring at least 3 callees to be a root candidate
                 "is_root_candidate": root_score >= 30 and pct > 0.3 and len(callee_addrs) >= 3,
             })
-    finally:
-        conn2.close()
+    except Exception as e:
+        print(f"Error in optimized find_patch_root: {e}")
+        pass
 
     candidates.sort(key=lambda x: -x["root_score"])
     root_candidates = [c for c in candidates if c["is_root_candidate"]]
