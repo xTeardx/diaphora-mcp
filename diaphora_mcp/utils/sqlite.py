@@ -124,7 +124,9 @@ def get_funcs_batch(db_path: str, addresses: list[str]) -> dict[str, dict]:
 
             placeholders = ",".join("?" for _ in norm)
             cur.execute(
-                f"SELECT * FROM functions WHERE address IN ({placeholders})",
+                f"SELECT address, name, nodes, edges, cyclomatic_complexity, "
+                f"instructions, pseudocode, assembly, prototype, bytes_hash "
+                f"FROM functions WHERE address IN ({placeholders})",
                 list(norm.keys()),
             )
             result = {}

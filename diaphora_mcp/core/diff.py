@@ -41,15 +41,25 @@ def read_results(
         mtypes = MATCH_TYPES.get(match_type, MATCH_TYPES["all"])
         placeholders = ",".join("?" for _ in mtypes)
 
+        # Enforce query-level LIMIT to avoid loading thousands of rows into memory
+        effective_limit = min(limit or 500, 5000) if limit and limit > 0 else 500
+
         if min_ratio > 0:
             sql = (
-                f"SELECT * FROM results WHERE type IN ({placeholders}) AND ratio >= ?"
-                " ORDER BY ratio DESC"
+                f"SELECT address, name, address2, name2, ratio, type, "
+                f"nodes1, nodes2, description "
+                f"FROM results WHERE type IN ({placeholders}) AND ratio >= ?"
+                f" ORDER BY ratio DESC LIMIT ?"
             )
-            params = [*mtypes, min_ratio]
+            params = [*mtypes, min_ratio, effective_limit]
         else:
-            sql = f"SELECT * FROM results WHERE type IN ({placeholders}) ORDER BY ratio DESC"
-            params = [*mtypes]
+            sql = (
+                f"SELECT address, name, address2, name2, ratio, type, "
+                f"nodes1, nodes2, description "
+                f"FROM results WHERE type IN ({placeholders})"
+                f" ORDER BY ratio DESC LIMIT ?"
+            )
+            params = [*mtypes, effective_limit]
 
         cur.execute(sql, params)
         results = [dict(r) for r in cur.fetchall()]
