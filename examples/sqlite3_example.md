@@ -1,8 +1,8 @@
-[Читать на русском](sqlite3_example.ru.md)
+[Read in Russian](sqlite3_example.ru.md)
 
 # Diaphora MCP — SQLite3 DLL Binary Diffing Example
 
-This example compares two Windows SQLite3 DLLs using **Diaphora MCP** (IDA Pro + Diaphora integration via the MCP protocol).
+This example compares two Windows DLLs based on SQLite3 using **Diaphora MCP** (IDA Pro + Diaphora integration via the MCP protocol).
 
 ## 📂 Source Files
 
@@ -12,7 +12,8 @@ This example compares two Windows SQLite3 DLLs using **Diaphora MCP** (IDA Pro +
 | `sqlite3_python.dll` | 1.5 MB | **2023** (2023-05-16) | `831d0fb2836b71c9bc51067c49fee4b8f18047814f2ff22d817d25195cf350b0` |
 
 Both DLLs export the SQLite3 API, but:
-- **aimp** — older build (2015) with custom naming (`_0` suffixes, many `sub_*`)
+
+- **aimp** — older build (2015) with custom naming (`_0` suffix, many `sub_*`)
 - **python** — newer build (2023) with canonical function names
 
 Source IDB/i64 files: `sqlite3_aimp.dll.i64` (62 MB), `sqlite3_python.dll.i64` (77 MB).
@@ -44,7 +45,7 @@ Overall match statistics, top best/partial matches.
 
 Sort functions by importance with security classification.
 
-### 4. Comparison (compare_functions)
+### 4. Function Comparison (compare_functions)
 
 Side-by-side assembly and pseudocode for matched function pairs.
 
