@@ -104,7 +104,7 @@ Or run the full pipeline in one command:
 
 ## Example (Live Session Transcript)
 
-See **[examples/basic-session.md](examples/basic-session.md)** for a complete step-by-step transcript of a real Diaphora MCP session — from exporting two IDB databases to comparing individual functions.
+See **[examples/basic-session.md](examples/basic-session.md)** for a complete step-by-step transcript of a real Diaphora MCP session — from exporting two IDB databases to comparing individual functions. Also available in [Russian](examples/basic-session.ru.md).
 
 Here's a sneak peek of what the server returns:
 
@@ -246,7 +246,7 @@ Tools like `analyze_diff_results`, `compare_functions`, and `find_function_match
 ## Examples
 
 To see Diaphora MCP in action, check out the following examples:
-- [Basic Session Transcript](examples/basic-session.md): A real MCP session walkthrough with exact JSON input/output for every tool call — from export to function comparison.
+- [Basic Session Transcript](examples/basic-session.md): A real MCP session walkthrough with exact JSON input/output for every tool call — from export to function comparison. Also available in [Russian](examples/basic-session.ru.md).
 
 ## AI Agent Guidelines (Important)
 

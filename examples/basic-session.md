@@ -1,3 +1,5 @@
+[Читать на русском](basic-session.ru.md)
+
 # Diaphora MCP — Basic Diffing Session (Real Transcript)
 
 This document walks through a **real** Diaphora MCP session, from exporting two IDB databases to comparing individual functions. Every JSON block shown here was captured from an actual AI-agent ↔ MCP-server conversation — nothing is fabricated.
