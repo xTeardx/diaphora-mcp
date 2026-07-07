@@ -359,7 +359,7 @@ Conclusion: the newer SQLite engine added retry logic for schema-change/lock con
 
 ### Step 6: Call Graph Change — `sqlite3MallocSize`
 
-**Agent asks:** "Покажите как изменился граф вызовов для `sqlite3MallocSize`."
+**Agent asks:** "Show how the call graph changed for `sqlite3MallocSize`."
 
 **MCP tool call (`get_changed_callgraph`):**
 
