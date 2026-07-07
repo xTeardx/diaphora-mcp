@@ -54,7 +54,7 @@ Fixes/
 
 ### Step 1: Full Pipeline — Export + Diff
 
-**Agent asks:** "Запускаю полный пайплайн Diaphora: экспорт обеих .i64 → диффинг → сводка. Для быстрого первого прохода декомпилятор отключён."
+**Agent asks:** "Running the full Diaphora pipeline: export both .i64 → diff → summary. Decompiler is off for a fast first pass."
 
 **MCP tool call (`batch_export_and_diff`):**
 
@@ -110,7 +110,7 @@ Fixes/
 
 ### Step 2: Diff Summary
 
-**Agent asks:** "Отличные данные! Давайте получим сводку и анализ безопасности."
+**Agent asks:** "Great data! Let's get the summary and security analysis."
 
 **MCP tool call (`get_diff_summary`):**
 
@@ -158,7 +158,7 @@ Fixes/
 
 ### Step 3: Rank Changes by Importance
 
-**Agent asks:** "Давайте теперь получим анализ безопасности и ранжирование изменений."
+**Agent asks:** "Now let's get security analysis and rank the changes."
 
 **MCP tool call (`rank_changes`):**
 
@@ -229,7 +229,7 @@ Fixes/
 
 ### Step 4: Compare a Specific Function (`vdbe_exec`)
 
-**Agent asks:** "Давайте сравним `vdbe_exec` — ядро VDBE."
+**Agent asks:** "Let's compare `vdbe_exec` — the VDBE core."
 
 **MCP tool call (`compare_functions`):**
 
@@ -304,7 +304,7 @@ Fixes/
 
 ### Step 5: Behaviour Change Analysis
 
-**Agent asks:** "Что именно изменилось в `vdbe_exec`?"
+**Agent asks:** "What exactly changed in `vdbe_exec`?"
 
 **MCP tool call (`detect_behavior_change`):**
 
