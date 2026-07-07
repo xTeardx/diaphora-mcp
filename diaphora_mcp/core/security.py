@@ -114,11 +114,13 @@ def analyze_diff_results(
             row["pseudo1"] = f1.get("pseudocode", "") or ""
             row["asm1"] = f1.get("assembly", "") or ""
             row["addr1"] = addr1
+            row["cyclomatic_complexity1"] = f1.get("cyclomatic_complexity")
         if f2:
             row["name2"] = row.get("name2") or f2.get("name", "")
             row["pseudo2"] = f2.get("pseudocode", "") or ""
             row["asm2"] = f2.get("assembly", "") or ""
             row["addr2"] = addr2
+            row["cyclomatic_complexity2"] = f2.get("cyclomatic_complexity")
 
     matches = []
     security_count = 0

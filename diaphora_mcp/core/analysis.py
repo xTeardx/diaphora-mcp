@@ -8,7 +8,7 @@ import json
 import os
 import sqlite3
 
-from ..utils.sqlite import check_db, get_func, get_callgraph, resolve_func_names, norm_addr, _detect_decimal
+from ..utils.sqlite import check_db, get_func, get_funcs_batch, get_callgraph, resolve_func_names, norm_addr, _detect_decimal
 from ..utils.connection import get_connection
 from ..utils.format import pseudocode_simple_diff, func_features, dumps, err_json
 

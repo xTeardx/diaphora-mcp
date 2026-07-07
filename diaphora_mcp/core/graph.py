@@ -219,7 +219,7 @@ def find_patch_root(
     if not db1_path or not db2_path:
         return dumps({
             "note": "Underlying databases not found — limited analysis",
-            "results": [r for r in results],
+            "results": [dict(r) for r in results_data],
         })
 
     changed_addrs = set()
