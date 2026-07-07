@@ -9,7 +9,7 @@ import os
 import sqlite3
 
 from ..utils.sqlite import check_db, get_func, get_callgraph, resolve_func_names, get_underlying_db_paths, norm_addr, read_adaptive_table, _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP
-from ..utils.connection import get_connection
+from ..utils.connection import get_connection, get_cache_manager
 from ..utils.format import dumps, err_json
 from .repository import IndexedDatabase, CallGraphEngine
 
@@ -21,8 +21,9 @@ def build_call_path(db_path: str, start_addr: str, depth: int,
     Uses in-memory CallGraphEngine and IndexedDatabase — zero SQL
     queries after the initial (lazy) load.
     """
-    indexed = IndexedDatabase(db_path)
-    cg_engine = CallGraphEngine(db_path)
+    cache_mgr = get_cache_manager()
+    indexed = cache_mgr.get_indexed(db_path)
+    cg_engine = cache_mgr.get_callgraph(db_path)
     # Lazy loads happen on first access below
 
     raw = cg_engine.bfs_traverse(start_addr, depth, direction)
@@ -240,8 +241,10 @@ def find_patch_root(
 
     candidates = []
     try:
-        indexed_db2 = IndexedDatabase(db2_path)
-        cg_engine2 = CallGraphEngine(db2_path)
+        cache_mgr = get_cache_manager()
+        indexed_db2 = cache_mgr.get_indexed(db2_path)
+        cg_engine2 = cache_mgr.get_callgraph(db2_path)
+        cg_engine2._ensure_loaded()
         
         for addr in changed_addrs:
             meta = indexed_db2.get_metadata(addr)

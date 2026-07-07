@@ -155,10 +155,10 @@ def read_adaptive_table(
 # ---------------------------------------------------------------------------
 
 
-def norm_addr(addr: str) -> str:
+def norm_addr(addr: str, use_decimal: bool = False) -> str:
     """Normalize a hex or decimal address to a lowercase hex string (no 0x prefix)."""
     s = addr.strip().lower()
-    if s.isdigit() and int(s) > 1000000:
+    if use_decimal and s.isdigit() and int(s) > 1000000:
         return hex(int(s)).removeprefix("0x")
     return s.removeprefix("0x")
 
@@ -271,26 +271,28 @@ def get_funcs_batch(db_path: str, addresses: list[str]) -> dict[str, dict]:
     if not addresses or not os.path.isfile(db_path):
         return {}
 
-    norm = {}
-    for a in addresses:
-        key = norm_addr(a)
-        norm[key] = a
-
-    result: dict[str, dict] = {}
-
     try:
         conn = get_connection(db_path)
         use_decimal = _detect_decimal(conn)
+
+        norm = {}
+        for a in addresses:
+            key = norm_addr(a, False)
+            norm[key] = a
+
+        result: dict[str, dict] = {}
 
         # Build a list of (db_key, original_key) pairs
         keys = []
         for k, orig in norm.items():
             if use_decimal:
+                keys.append((k, orig))
                 try:
                     dec = str(int(k, 16))
-                    keys.append((dec, orig))
+                    if dec != k:
+                        keys.append((dec, orig))
                 except ValueError:
-                    keys.append((k, orig))
+                    pass
             else:
                 keys.append((k, orig))
 
@@ -331,19 +333,38 @@ def get_func(db_path: str, address: str = "", name: str = "") -> dict | None:
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     if address:
-        addr = norm_addr(address)
-        if _detect_decimal(conn):
+        use_decimal = _detect_decimal(conn)
+        addr = norm_addr(address, False)
+        if use_decimal:
+            addr_dec = None
             try:
-                addr = str(int(addr, 16))
+                addr_dec = str(int(addr, 16))
             except ValueError:
                 pass
-        cur.execute(
-            "SELECT address, name, nodes, edges, instructions, "
-            "cyclomatic_complexity, pseudocode, assembly, prototype, "
-            "bytes_hash, constants, mnemonics, loops, strongly_connected, "
-            "names, pseudocode_hash1, pseudocode_hash2 "
-            "FROM functions WHERE address = ?", (addr,)
-        )
+            if addr_dec and addr_dec != addr:
+                cur.execute(
+                    "SELECT address, name, nodes, edges, instructions, "
+                    "cyclomatic_complexity, pseudocode, assembly, prototype, "
+                    "bytes_hash, constants, mnemonics, loops, strongly_connected, "
+                    "names, pseudocode_hash1, pseudocode_hash2 "
+                    "FROM functions WHERE address = ? OR address = ?", (addr_dec, addr)
+                )
+            else:
+                cur.execute(
+                    "SELECT address, name, nodes, edges, instructions, "
+                    "cyclomatic_complexity, pseudocode, assembly, prototype, "
+                    "bytes_hash, constants, mnemonics, loops, strongly_connected, "
+                    "names, pseudocode_hash1, pseudocode_hash2 "
+                    "FROM functions WHERE address = ?", (addr,)
+                )
+        else:
+            cur.execute(
+                "SELECT address, name, nodes, edges, instructions, "
+                "cyclomatic_complexity, pseudocode, assembly, prototype, "
+                "bytes_hash, constants, mnemonics, loops, strongly_connected, "
+                "names, pseudocode_hash1, pseudocode_hash2 "
+                "FROM functions WHERE address = ?", (addr,)
+            )
     elif name:
         cur.execute(
             "SELECT address, name, nodes, edges, instructions, "
@@ -382,13 +403,20 @@ def get_callgraph(db_path: str, func_address: str) -> dict:
     conn = get_connection(db_path)
     cur = conn.cursor()
 
-    addr = norm_addr(func_address)
-    if _detect_decimal(conn):
+    use_decimal = _detect_decimal(conn)
+    addr = norm_addr(func_address, False)
+    if use_decimal:
+        addr_dec = None
         try:
-            addr = str(int(addr, 16))
+            addr_dec = str(int(addr, 16))
         except ValueError:
             pass
-    cur.execute("SELECT id FROM functions WHERE address = ?", (addr,))
+        if addr_dec and addr_dec != addr:
+            cur.execute("SELECT id FROM functions WHERE address = ? OR address = ?", (addr_dec, addr))
+        else:
+            cur.execute("SELECT id FROM functions WHERE address = ?", (addr,))
+    else:
+        cur.execute("SELECT id FROM functions WHERE address = ?", (addr,))
     row = cur.fetchone()
     if not row:
         return {"callers": [], "callees": []}
@@ -400,7 +428,7 @@ def get_callgraph(db_path: str, func_address: str) -> dict:
         "SELECT address, type FROM callgraph WHERE func_id = ?", (fid,)
     )
     for addr_str, ctype in cur.fetchall():
-        norm_addr_str = norm_addr(addr_str)
+        norm_addr_str = norm_addr(addr_str, use_decimal)
         if ctype == "caller":
             callers.append(norm_addr_str)
         else:
@@ -414,19 +442,21 @@ def resolve_func_names(db_path: str, addresses: list[str]) -> dict:
         return {}
     conn = get_connection(db_path)
     cur = conn.cursor()
-    norm = {norm_addr(a): a for a in addresses}
     use_decimal = _detect_decimal(conn)
+    norm = {norm_addr(a, False): a for a in addresses}
     db_keys = []
     db_to_orig = {}
     for k, orig in norm.items():
         if use_decimal:
+            db_keys.append(k)
+            db_to_orig[k] = orig
             try:
                 dec = str(int(k, 16))
-                db_keys.append(dec)
-                db_to_orig[dec] = orig
+                if dec != k:
+                    db_keys.append(dec)
+                    db_to_orig[dec] = orig
             except ValueError:
-                db_keys.append(k)
-                db_to_orig[k] = orig
+                pass
         else:
             db_keys.append(k)
             db_to_orig[k] = orig

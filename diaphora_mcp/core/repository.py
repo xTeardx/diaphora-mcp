@@ -8,7 +8,7 @@ import sqlite3
 from functools import lru_cache
 from typing import Dict, List, Optional, Any, Tuple
 
-from ..utils.sqlite import norm_addr
+from ..utils.sqlite import norm_addr, _detect_decimal
 from ..utils.connection import get_connection
 
 
@@ -33,8 +33,14 @@ class DatabaseRepository:
     @lru_cache(maxsize=2000)
     def get_function_metadata(self, address: str) -> Optional[Dict[str, Any]]:
         """Return a lightweight function row (no pseudocode)."""
-        addr = norm_addr(address)
         conn = get_connection(self.db_path)
+        use_decimal = _detect_decimal(conn)
+        addr = norm_addr(address, False)
+        if use_decimal:
+            try:
+                addr = str(int(addr, 16))
+            except ValueError:
+                pass
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         cur.execute(
@@ -51,8 +57,14 @@ class DatabaseRepository:
     @lru_cache(maxsize=500)
     def get_pseudocode(self, address: str) -> str:
         """Return the pseudocode blob for *address* (cached)."""
-        addr = norm_addr(address)
         conn = get_connection(self.db_path)
+        use_decimal = _detect_decimal(conn)
+        addr = norm_addr(address, False)
+        if use_decimal:
+            try:
+                addr = str(int(addr, 16))
+            except ValueError:
+                pass
         cur = conn.cursor()
         cur.execute(
             "SELECT pseudocode FROM functions WHERE address = ?", (addr,)
@@ -65,8 +77,14 @@ class DatabaseRepository:
     @lru_cache(maxsize=500)
     def get_cached_callgraph(self, address: str) -> Dict[str, List[str]]:
         """Return {"callers": [...], "callees": [...]} for *address*."""
-        addr = norm_addr(address)
         conn = get_connection(self.db_path)
+        use_decimal = _detect_decimal(conn)
+        addr = norm_addr(address, False)
+        if use_decimal:
+            try:
+                addr = str(int(addr, 16))
+            except ValueError:
+                pass
         cur = conn.cursor()
         cur.execute("SELECT id FROM functions WHERE address = ?", (addr,))
         row = cur.fetchone()
@@ -80,10 +98,11 @@ class DatabaseRepository:
             "SELECT address, type FROM callgraph WHERE func_id = ?", (fid,)
         )
         for addr_str, ctype in cur.fetchall():
+            norm_addr_str = norm_addr(addr_str, use_decimal)
             if ctype == "caller":
-                callers.append(addr_str)
+                callers.append(norm_addr_str)
             else:
-                callees.append(addr_str)
+                callees.append(norm_addr_str)
         return {"callers": callers, "callees": callees}
 
 
@@ -120,6 +139,7 @@ class IndexedDatabase:
     def _preload_indexes(self):
         """Build in-memory lookup indexes from the functions table."""
         conn = get_connection(self.db_path)
+        use_decimal = _detect_decimal(conn)
         cur = conn.cursor()
         cur.execute(
             "SELECT address, name, bytes_hash, "
@@ -128,7 +148,7 @@ class IndexedDatabase:
         )
         for row in cur.fetchall():
             addr, name, bhash = row[0], row[1], row[2]
-            n_addr = norm_addr(addr)
+            n_addr = norm_addr(addr, use_decimal)
             if name:
                 self.name_to_addr[name] = n_addr
                 self.addr_to_name[n_addr] = name
@@ -144,7 +164,7 @@ class IndexedDatabase:
 
     def get_name(self, address: str) -> Optional[str]:
         self._ensure_loaded()
-        return self.addr_to_name.get(norm_addr(address))
+        return self.addr_to_name.get(norm_addr(address, False))
 
     def get_address(self, name: str) -> Optional[str]:
         self._ensure_loaded()
@@ -156,7 +176,7 @@ class IndexedDatabase:
 
     def get_metadata(self, address: str) -> Optional[Dict[str, Any]]:
         self._ensure_loaded()
-        n_addr = norm_addr(address)
+        n_addr = norm_addr(address, False)
         meta = self.addr_to_metadata.get(n_addr)
         if meta is None:
             return None
@@ -200,11 +220,12 @@ class CallGraphEngine:
     def _load_graph(self):
         """Load all edges from the callgraph table into memory."""
         conn = get_connection(self.db_path)
+        use_decimal = _detect_decimal(conn)
         cur = conn.cursor()
         # Map function IDs to their normalised addresses
         cur.execute("SELECT id, address FROM functions")
         id_to_addr = {
-            row[0]: norm_addr(row[1]) for row in cur.fetchall()
+            row[0]: norm_addr(row[1], use_decimal) for row in cur.fetchall()
         }
 
         cur.execute("SELECT func_id, address, type FROM callgraph")
@@ -212,7 +233,7 @@ class CallGraphEngine:
             source_addr = id_to_addr.get(fid)
             if not source_addr:
                 continue
-            target_addr = norm_addr(target_addr_str)
+            target_addr = norm_addr(target_addr_str, use_decimal)
 
             if ctype == "caller":
                 # target_addr is a caller of source_addr
@@ -234,7 +255,7 @@ class CallGraphEngine:
         self._ensure_loaded()
         visited: set = set()
         result: List[Dict[str, Any]] = []
-        queue: List[Tuple[str, int]] = [(norm_addr(start_addr), 0)]
+        queue: List[Tuple[str, int]] = [(norm_addr(start_addr, False), 0)]
         graph = self.adjacency if direction == "callees" else self.callers
 
         while queue:

@@ -18,7 +18,7 @@ import psutil
 
 from ..config import IDAT_PATH, DIAPHORA_DIR, HEADLESS_WRAPPER, DIAPHORA_SCRIPT, PYTHON
 from ..utils.sqlite import check_db, check_db_for_diff, force_delete_file
-from ..utils.connection import get_connection
+from ..utils.connection import get_connection, get_cache_manager
 from ..utils.log import ExportLogger, OperationLogger
 from ..utils.format import dumps, err_json
 
@@ -834,9 +834,16 @@ async def batch_export_and_diff(
 
         finally:
             if cleanup:
-                batch_log.info("Cleaning up transient SQLite WAL/SHM files...")
-                for path in [f"{sqlite1}-wal", f"{sqlite1}-shm",
-                             f"{sqlite2}-wal", f"{sqlite2}-shm"]:
+                batch_log.info("Evicting databases from cache and cleaning up transient SQLite files...")
+                cache_mgr = get_cache_manager()
+                for sqlite_path in [sqlite1, sqlite2]:
+                    try:
+                        cache_mgr.evict(sqlite_path)
+                    except Exception as e:
+                        batch_log.warn(f"Failed to evict database {sqlite_path}: {e}")
+
+                for path in [sqlite1, f"{sqlite1}-wal", f"{sqlite1}-shm",
+                             sqlite2, f"{sqlite2}-wal", f"{sqlite2}-shm"]:
                     try:
                         if os.path.exists(path):
                             force_delete_file(path)

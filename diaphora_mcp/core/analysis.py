@@ -117,18 +117,34 @@ def get_function_pseudocode(
     cur = conn.cursor()
 
     if address:
-        addr = norm_addr(address)
+        addr = norm_addr(address, False)
         if _detect_decimal(conn):
+            addr_dec = None
             try:
-                addr = str(int(addr, 16))
+                addr_dec = str(int(addr, 16))
             except ValueError:
                 pass
-        cur.execute(
-            """SELECT name, address, pseudocode, assembly, prototype,
-                      instructions, cyclomatic_complexity
-               FROM functions WHERE address = ?""",
-            (addr,),
-        )
+            if addr_dec and addr_dec != addr:
+                cur.execute(
+                    """SELECT name, address, pseudocode, assembly, prototype,
+                              instructions, cyclomatic_complexity
+                       FROM functions WHERE address = ? OR address = ?""",
+                    (addr_dec, addr),
+                )
+            else:
+                cur.execute(
+                    """SELECT name, address, pseudocode, assembly, prototype,
+                              instructions, cyclomatic_complexity
+                       FROM functions WHERE address = ?""",
+                    (addr,),
+                )
+        else:
+            cur.execute(
+                """SELECT name, address, pseudocode, assembly, prototype,
+                          instructions, cyclomatic_complexity
+                   FROM functions WHERE address = ?""",
+                (addr,),
+            )
     elif name:
         cur.execute(
             """SELECT name, address, pseudocode, assembly, prototype,

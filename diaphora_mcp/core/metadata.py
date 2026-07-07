@@ -10,7 +10,7 @@ import json
 import os
 import sqlite3
 
-from ..utils.sqlite import check_db, norm_addr, read_adaptive_table, _RESULTS_COLUMN_MAP
+from ..utils.sqlite import check_db, norm_addr, read_adaptive_table, _RESULTS_COLUMN_MAP, _detect_decimal
 from ..utils.connection import get_connection
 from ..utils.format import dumps, err_json
 
@@ -37,6 +37,9 @@ def transfer_metadata(
     if err2:
         return err_json(f"target: {err2}")
 
+    conn_src = get_connection(source_db_path)
+    use_dec_src = _detect_decimal(conn_src)
+
     # Build address mapping
     addr_map = {}
     if match_results_path and os.path.isfile(match_results_path):
@@ -50,11 +53,10 @@ def transfer_metadata(
             src = row.get("address")
             tgt = row.get("address2")
             if src and tgt:
-                addr_map[norm_addr(src)] = norm_addr(tgt)
+                addr_map[norm_addr(src, False)] = norm_addr(tgt, False)
 
     items = []
 
-    conn_src = get_connection(source_db_path)
     conn_src.row_factory = sqlite3.Row
     cur_src = conn_src.cursor()
 
@@ -75,7 +77,7 @@ def transfer_metadata(
             )
             use_true_name = False
         for row in cur_src.fetchall():
-            src_addr = norm_addr(row["address"])
+            src_addr = norm_addr(row["address"], use_dec_src)
             tgt_addr = addr_map.get(src_addr, src_addr)
             new_name = (row["true_name"] if use_true_name else None) or row["name"]
             items.append({
@@ -92,7 +94,7 @@ def transfer_metadata(
             "SELECT address, comment FROM functions WHERE comment != '' AND comment IS NOT NULL"
         )
         for row in cur_src.fetchall():
-            src_addr = norm_addr(row["address"])
+            src_addr = norm_addr(row["address"], use_dec_src)
             tgt_addr = addr_map.get(src_addr, src_addr)
             items.append({
                 "type": "comment",
@@ -109,7 +111,7 @@ def transfer_metadata(
             "WHERE prototype != '' AND prototype IS NOT NULL"
         )
         for row in cur_src.fetchall():
-            src_addr = norm_addr(row["address"])
+            src_addr = norm_addr(row["address"], use_dec_src)
             tgt_addr = addr_map.get(src_addr, src_addr)
             items.append({
                 "type": "prototype",
@@ -121,19 +123,22 @@ def transfer_metadata(
 
     # 4. Types (structs, enums, unions)
     if transfer_types:
-        cur_src.execute(
-            "SELECT name, type, value FROM program_data "
-            "WHERE type IN ('structure', 'struct', 'enum', 'union')"
-        )
-        for row in cur_src.fetchall():
-            items.append({
-                "type": row["type"],
-                "source_address": "",
-                "target_address": "",
-                "name": row["name"],
-                "value": (row["value"] or "")[:1000],
-                "auto_apply": f"declare_c_type(\"{row['name']}: {row['value'][:80]}\")",
-            })
+        try:
+            cur_src.execute(
+                "SELECT name, type, value FROM program_data "
+                "WHERE type IN ('structure', 'struct', 'enum', 'union')"
+            )
+            for row in cur_src.fetchall():
+                items.append({
+                    "type": row["type"],
+                    "source_address": "",
+                    "target_address": "",
+                    "name": row["name"],
+                    "value": (row["value"] or "")[:1000],
+                    "auto_apply": f"declare_c_type(\"{row['name']}: {row['value'][:80]}\")",
+                })
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            pass
 
     return dumps({
         "total_items": len(items),
