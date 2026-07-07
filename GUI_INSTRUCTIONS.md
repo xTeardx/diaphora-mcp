@@ -6,11 +6,6 @@ The GUI Bridge allows the MCP server to run database exports instantly from a ru
 
 ---
 
-> [!NOTE]
-> **Important Update**: The legacy XML-RPC listener (`diaphora_gui_listener.py` on port `28652`) has been **deprecated and removed** due to UI thread-safety limitations and event-loop deadlocks. 
-> 
-> The bridge is now powered by the official, robust **`ida_mcp.py` HTTP plugin** (running on port `13337` by default).
-
 ## Step 1. Installing the Plugin in IDA Pro
 
 The plugin is part of the `ida-pro-mcp` package. To install it:
