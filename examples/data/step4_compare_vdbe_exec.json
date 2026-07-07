@@ -1,0 +1,38 @@
+{
+  "function_old": {
+    "name": "vdbe_exec",
+    "address": "1800beb20",
+    "prototype": "__int64 __fastcall(int, int, int, int, __int64, __int64, __int64)",
+    "instructions": 94,
+    "cyclomatic_complexity": 32,
+    "nodes": 18,
+    "edges": 48,
+    "pseudocode": null,
+    "assembly": "push    rbx\npush    rbp\npush    rsi\npush    r12\npush    r13\nsub     rsp, 40h\nmov     rbp, [rsp+68h+arg_28]\nmov     r12d, r9d\n... (94 instructions total)",
+    "bytes_hash": "89e3f8de94e38ecad444a2c34ec56a93"
+  },
+  "function_new": {
+    "name": "vdbe_exec",
+    "address": "180081df0",
+    "prototype": "__int64 __fastcall(int, int, int, int, __int64, __int64, __int64)",
+    "instructions": 144,
+    "cyclomatic_complexity": 80,
+    "nodes": 40,
+    "edges": 118,
+    "pseudocode": null,
+    "assembly": "mov     [rsp+arg_18], r9d\nmov     [rsp+arg_10], r8d\npush    rbx\npush    rsi\npush    r12\npush    r13\npush    r14\npush    r15\n... (144 instructions total)",
+    "bytes_hash": "41ab85f0dc9e14023d5d1eacdaaf7f07"
+  },
+  "comparison": {
+    "name_changed": false,
+    "instructions_added": 50,
+    "complexity_change": 48,
+    "hash_changed": true
+  },
+  "ida_pro_mcp": {
+    "db1": "Fixes/sqlite3_aimp.dll.diaphora.sqlite",
+    "db2": "Fixes/sqlite3_python.dll.diaphora.sqlite",
+    "address_old": "1800beb20",
+    "address_new": "180081df0"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "config": {
+    "main_db": "Fixes/sqlite3_aimp.dll.diaphora.sqlite",
+    "diff_db": "Fixes/sqlite3_python.dll.diaphora.sqlite",
+    "version": "3.4",
+    "date": "Mon Jul  6 01:01:51 2026"
+  },
+  "total_matches": 1105,
+  "top_n": 5,
+  "ranked": [
+    {
+      "score": 100, "type": "partial", "ratio": "0.7227241",
+      "name_old": "win_shm_connect", "name_new": "win_shm_connect",
+      "address_old": "180082b10", "address_new": "18000e380",
+      "security_relevant": true, "security_categories": ["network"],
+      "complexity_change": 5, "pseudo_diff_lines": 0,
+      "ida_pro_mcp": { "db1": "aimp.diaphora.sqlite", "db2": "python.diaphora.sqlite", "addr1": "180082b10", "addr2": "18000e380" }
+    },
+    {
+      "score": 100, "type": "partial", "ratio": "0.5774286",
+      "name_old": "sqlite3_wal_checkpoint_v2_0", "name_new": "sqlite3_wal_checkpoint_v2",
+      "address_old": "1800a9b70", "address_new": "1800bee00",
+      "security_relevant": true, "security_categories": ["validation"],
+      "complexity_change": 4, "pseudo_diff_lines": 0,
+      "ida_pro_mcp": { "db1": "aimp.diaphora.sqlite", "db2": "python.diaphora.sqlite", "addr1": "1800a9b70", "addr2": "1800bee00" }
+    },
+    {
+      "score": 100, "type": "partial", "ratio": "0.5184746",
+      "name_old": "sqlite3_value_free_0_0", "name_new": "sqlite3_str_finish",
+      "address_old": "18000c3b0", "address_new": "1800089b0",
+      "security_relevant": true, "security_categories": ["memory"],
+      "complexity_change": 5, "pseudo_diff_lines": 0,
+      "ida_pro_mcp": { "db1": "aimp.diaphora.sqlite", "db2": "python.diaphora.sqlite", "addr1": "18000c3b0", "addr2": "1800089b0" }
+    },
+    {
+      "score": 100, "type": "partial", "ratio": "0.5086301",
+      "name_old": "sub_180043B40", "name_new": "sub_1800D0D10",
+      "address_old": "180043b40", "address_new": "1800d0d10",
+      "security_relevant": false, "security_categories": [],
+      "complexity_change": 49, "pseudo_diff_lines": 0,
+      "ida_pro_mcp": { "db1": "aimp.diaphora.sqlite", "db2": "python.diaphora.sqlite", "addr1": "180043b40", "addr2": "1800d0d10" }
+    },
+    {
+      "score": 100, "type": "partial", "ratio": "0.5027339",
+      "name_old": "sqlite3_exec_0", "name_new": "sqlite3_exec",
+      "address_old": "1800cf490", "address_new": "180079a70",
+      "security_relevant": true, "security_categories": ["process"],
+      "complexity_change": 18, "pseudo_diff_lines": 0,
+      "ida_pro_mcp": { "db1": "aimp.diaphora.sqlite", "db2": "python.diaphora.sqlite", "addr1": "1800cf490", "addr2": "180079a70" }
+    }
+  ],
+  "categories": {
+    "high_interest": 443,
+    "medium_interest": 448,
+    "low_interest": 214
+  }
+}

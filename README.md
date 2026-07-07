@@ -77,9 +77,7 @@ Or run the full pipeline in one command:
 ┃ batch_export_and_diff(idb1="old.i64", idb2="new.i64")
 ```
 
-## Usage
-
-### Quick Start
+## Quick Start
 
 ```
 ┃ # 1. Full pipeline: export two .i64 → diff → summary report
@@ -103,6 +101,29 @@ Or run the full pipeline in one command:
 ┃ # 7. Generate full report
 ┃ summarize_patch(results_path="v1.0_vs_v1.1.diaphora")
 ```
+
+## Example (Live Session Transcript)
+
+See **[examples/basic-session.md](examples/basic-session.md)** for a complete step-by-step transcript of a real Diaphora MCP session — from exporting two IDB databases to comparing individual functions.
+
+Here's a sneak peek of what the server returns:
+
+**Input — compare two SQLite3 DLLs (2015 vs 2023):**
+```json
+{"idb1_path": "old.i64", "idb2_path": "new.i64", "use_decompiler": false}
+```
+
+**Output — summary after export + diff:**
+```json
+{
+  "best_matches": 60,
+  "partial_matches": 993,
+  "multimatches": 52,
+  "unmatched_primary": 2647
+}
+```
+
+The session walks through 6 MCP tool calls, showing the exact JSON in/out for each step, with the agent's reasoning alongside.
 
 ### Investigating a Single Database
 
@@ -226,6 +247,7 @@ Tools like `analyze_diff_results`, `compare_functions`, and `find_function_match
 
 To see Diaphora MCP in action, check out the following examples:
 - [Diffing sqlite3.dll (AIMP vs Python)](examples/sqlite3_example.md): A step-by-step guide to exporting, diffing, and comparing functions with different addresses using real-world DLLs on your system. Also available in [Russian](examples/sqlite3_example.ru.md).
+- [Basic Session Transcript](examples/basic-session.md): A real MCP session walkthrough with exact JSON input/output for every tool call — from export to function comparison.
 
 ## AI Agent Guidelines (Important)
 

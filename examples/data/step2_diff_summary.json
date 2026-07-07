@@ -1,0 +1,31 @@
+{
+  "config": {
+    "main_db": "Fixes/sqlite3_aimp.dll.diaphora.sqlite",
+    "diff_db": "Fixes/sqlite3_python.dll.diaphora.sqlite",
+    "version": "3.4",
+    "date": "Mon Jul  6 01:01:51 2026"
+  },
+  "match_statistics": [
+    { "type": "best",      "cnt": 60,   "avg_ratio": 1.0,    "max_ratio": 1.0,    "min_ratio": 1.0 },
+    { "type": "multimatch", "cnt": 52,  "avg_ratio": 0.7605, "max_ratio": 0.9565, "min_ratio": 0.452 },
+    { "type": "partial",   "cnt": 993,  "avg_ratio": 0.5906, "max_ratio": 0.996,  "min_ratio": 0.0745 }
+  ],
+  "unmatched": [
+    { "type": "primary",   "count": 1282 },
+    { "type": "secondary", "count": 1365 }
+  ],
+  "top_best_matches": [
+    { "line": "00000", "type": "best", "address": "18001ec40", "name": "CompareFunction",  "address2": "1800d6b80", "name2": "CompareFunction",  "ratio": "1.0000000", "nodes1": "3", "nodes2": "3", "description": "Perfect match, same name" },
+    { "line": "00013", "type": "best", "address": "1800a6ad0", "name": "sqlite3_create_collation_0", "address2": "1800c0a40", "name2": "sqlite3_create_collation", "ratio": "1.0000000", "nodes1": "1", "nodes2": "1", "description": "Equal assembly" },
+    { "line": "00014", "type": "best", "address": "1800bee80", "name": "sqlite3_prepare_0", "address2": "180082010", "name2": "sqlite3_prepare", "ratio": "1.0000000", "nodes1": "1", "nodes2": "1", "description": "Equal assembly" },
+    { "line": "00031", "type": "best", "address": "180017170", "name": "sqlite3_libversion_0", "address2": "1800bc160", "name2": "sqlite3_libversion", "ratio": "1.0000000", "nodes1": "1", "nodes2": "1", "description": "Same low complexity, prototype and names" },
+    { "line": "00038", "type": "best", "address": "1800a6580", "name": "sqlite3_bind_int_0", "address2": "180038460", "name2": "sqlite3_bind_int", "ratio": "1.0000000", "nodes1": "2", "nodes2": "2", "description": "Nodes, edges, complexity and mnemonics with small differences" }
+  ],
+  "top_partial_matches": [
+    { "line": "00000", "type": "partial", "address": "180013030", "name": "sub_180013030", "address2": "18007afd0", "name2": "sub_18007AFD0", "ratio": "0.9959630", "nodes1": "9", "nodes2": "9", "description": "Same low complexity and names" },
+    { "line": "00001", "type": "partial", "address": "180003460", "name": "sqlite3_strnicmp_0", "address2": "180009f90", "name2": "sqlite3_strnicmp", "ratio": "0.9914737", "nodes1": "12", "nodes2": "12", "description": "Same rare MD Index" },
+    { "line": "00015", "type": "partial", "address": "18001cbc0", "name": "sub_18001CBC0", "address2": "1800d1790", "name2": "sub_1800D1790", "ratio": "0.9524276", "nodes1": "508", "nodes2": "368", "description": "Switch structures" },
+    { "line": "00019", "type": "partial", "address": "18000b660", "name": "sub_18000B660", "address2": "180026ee0", "name2": "sub_180026EE0", "ratio": "0.9454444", "nodes1": "1", "nodes2": "1", "description": "Local affinity" },
+    { "line": "00053", "type": "partial", "address": "1800018d0", "name": "sqlite3_compileoption_get_0", "address2": "1800c2230", "name2": "sqlite3_compileoption_get", "ratio": "0.9020000", "nodes1": "3", "nodes2": "3", "description": "Mnemonics small-primes-product" }
+  ]
+}
