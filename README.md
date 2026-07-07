@@ -246,7 +246,6 @@ Tools like `analyze_diff_results`, `compare_functions`, and `find_function_match
 ## Examples
 
 To see Diaphora MCP in action, check out the following examples:
-- [Diffing sqlite3.dll (AIMP vs Python)](examples/sqlite3_example.md): A step-by-step guide to exporting, diffing, and comparing functions with different addresses using real-world DLLs on your system. Also available in [Russian](examples/sqlite3_example.ru.md).
 - [Basic Session Transcript](examples/basic-session.md): A real MCP session walkthrough with exact JSON input/output for every tool call — from export to function comparison.
 
 ## AI Agent Guidelines (Important)
