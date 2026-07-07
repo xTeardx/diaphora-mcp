@@ -9,7 +9,8 @@ import os
 import sqlite3
 
 from ..models import SECURITY_KEYWORDS, SECURITY_KEYWORD_CATEGORIES
-from ..utils.sqlite import get_underlying_db_paths, get_func, get_funcs_batch
+from ..utils.sqlite import get_underlying_db_paths, get_func, get_funcs_batch, read_adaptive_table, _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP
+from ..utils.connection import get_connection
 from ..utils.format import dumps, err_json
 
 
@@ -62,34 +63,40 @@ def analyze_diff_results(
     if not os.path.isfile(results_path):
         return err_json(f"Results file not found: {results_path}")
 
-    conn = sqlite3.connect(results_path)
+    conn = get_connection(results_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    config_info = dict(cur.execute("SELECT * FROM config").fetchone() or {})
+
     try:
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+        databases = [dict(r) for r in cur.execute("SELECT * FROM matching_databases").fetchall()]
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        databases = []
 
-        config_info = dict(cur.execute("SELECT * FROM config").fetchone() or {})
+    db1_path = config_info.get("main_db") or config_info.get("primary_database", "")
+    db2_path = config_info.get("diff_db") or config_info.get("secondary_database", "")
 
-        try:
-            databases = [dict(r) for r in cur.execute("SELECT * FROM matching_databases").fetchall()]
-        except (sqlite3.OperationalError, sqlite3.DatabaseError):
-            databases = []
+    # Read all results using schema-adaptive detection
+    all_results = read_adaptive_table(
+        results_path, _RESULTS_COLUMN_MAP, "results",
+        row_factory=sqlite3.Row,
+    )
 
-        db1_path = config_info.get("main_db") or config_info.get("primary_database", "")
-        db2_path = config_info.get("diff_db") or config_info.get("secondary_database", "")
+    # Read type counts (use GROUP BY, works regardless of column naming)
+    # Determine actual type column name
+    available = {r[1].lower() for r in conn.execute("PRAGMA table_info(results)").fetchall()}
+    type_col = "type" if "type" in available else "match_type"
+    try:
+        cur.execute(f"SELECT {type_col}, count(*) as cnt FROM results GROUP BY {type_col}")
+        type_counts = {r[type_col]: r["cnt"] for r in cur.fetchall()}
+    except Exception:
+        type_counts = {}
 
-        # Read all results from the .diaphora file directly
-        all_results = [dict(r) for r in cur.execute("SELECT * FROM results").fetchall()]
-
-        # Read type counts and unmatched upfront so we can close the connection
-        cur.execute(
-            """SELECT type, count(*) as cnt
-               FROM results GROUP BY type"""
-        )
-        type_counts = {r["type"]: r["cnt"] for r in cur.fetchall()}
-
-        unmatched = [dict(r) for r in cur.execute("SELECT * FROM unmatched").fetchall()]
-    finally:
-        conn.close()
+    unmatched = read_adaptive_table(
+        results_path, _UNMATCHED_COLUMN_MAP, "unmatched",
+        row_factory=sqlite3.Row,
+    )
 
     # Batch-load function details from underlying databases
     addrs1 = [r.get("address", "") for r in all_results]
@@ -123,7 +130,15 @@ def analyze_diff_results(
         pseudo2 = row.get("pseudo2") or ""
         asm1 = row.get("asm1") or ""
         asm2 = row.get("asm2") or ""
-        ratio = row.get("ratio", 0) or 0
+        ratio = row.get("ratio", 0)
+        # Coerce ratio to float (SQLite may return TEXT depending on schema)
+        if ratio is not None:
+            try:
+                ratio = float(ratio)
+            except (TypeError, ValueError):
+                ratio = 0.0
+        else:
+            ratio = 0.0
         match_type = row.get("type", "unknown")
 
         sec_old = match_security_keywords(name1 or "", pseudo1, asm1)
@@ -217,14 +232,10 @@ def detect_security_patches(
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 
-    conn = sqlite3.connect(results_path)
-    try:
-        conn.row_factory = sqlite3.Row
-        cur = conn.conn.cursor() if hasattr(conn, "conn") else conn.cursor()
-        cur.execute("SELECT * FROM results")
-        results = [dict(r) for r in cur.fetchall()]
-    finally:
-        conn.close()
+    results = read_adaptive_table(
+        results_path, _RESULTS_COLUMN_MAP, "results",
+        row_factory=sqlite3.Row,
+    )
 
     from ..utils.format import pseudocode_simple_diff
 
@@ -241,7 +252,15 @@ def detect_security_patches(
         addr2 = row.get("address2", "")
         name1 = row.get("name", "")
         name2 = row.get("name2", "")
-        ratio = row.get("ratio", 0) or 0
+        ratio = row.get("ratio", 0)
+        # Coerce ratio to float (SQLite may return TEXT depending on schema)
+        if ratio is not None:
+            try:
+                ratio = float(ratio)
+            except (TypeError, ValueError):
+                ratio = 0.0
+        else:
+            ratio = 0.0
         mtype = row.get("type", "")
 
         pseudo1 = pseudo2 = ""

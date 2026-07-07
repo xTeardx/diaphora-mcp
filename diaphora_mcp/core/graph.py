@@ -8,7 +8,8 @@ and root-cause detection via dependency-chain analysis.
 import os
 import sqlite3
 
-from ..utils.sqlite import check_db, get_func, get_callgraph, resolve_func_names, get_underlying_db_paths, norm_addr
+from ..utils.sqlite import check_db, get_func, get_callgraph, resolve_func_names, get_underlying_db_paths, norm_addr, read_adaptive_table, _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP
+from ..utils.connection import get_connection
 from ..utils.format import dumps, err_json
 from .repository import IndexedDatabase, CallGraphEngine
 
@@ -17,33 +18,30 @@ def build_call_path(db_path: str, start_addr: str, depth: int,
                     direction: str = "callees") -> list:
     """BFS walk callgraph from *start_addr* up to *depth* levels.
 
-    *direction* is "callees" (down) or "callers" (up).
+    Uses in-memory CallGraphEngine and IndexedDatabase — zero SQL
+    queries after the initial (lazy) load.
     """
-    visited = set()
+    indexed = IndexedDatabase(db_path)
+    cg_engine = CallGraphEngine(db_path)
+    # Lazy loads happen on first access below
+
+    raw = cg_engine.bfs_traverse(start_addr, depth, direction)
     result = []
-    queue = [(start_addr, 0)]
+    for entry in raw:
+        addr = entry["address"]
+        targets = entry.get("targets", [])
+        functions = {}
+        for tgt in targets:
+            name = indexed.get_name(tgt) or "?"
+            functions[tgt] = name
 
-    while queue:
-        addr, level = queue.pop(0)
-        if addr in visited or level > depth:
-            continue
-        visited.add(addr)
-
-        cg = get_callgraph(db_path, addr)
-        targets = cg.get(direction, [])
-        resolved = resolve_func_names(db_path, targets)
-
-        entry = {
+        result.append({
             "address": addr,
-            "level": level,
+            "level": entry["level"],
             "direction": direction,
             "calls": len(targets),
-            "functions": {tgt: resolved.get(tgt, "?") for tgt in sorted(targets)[:20]},
-        }
-        result.append(entry)
-
-        for tgt in targets[:50]:
-            queue.append((tgt, level + 1))
+            "functions": functions,
+        })
 
     return result
 
@@ -207,19 +205,15 @@ def find_patch_root(
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 
-    conn = sqlite3.connect(results_path)
-    try:
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM results")
-        results = [dict(r) for r in cur.fetchall()]
-        try:
-            cur.execute("SELECT * FROM unmatched")
-            unmatched = [dict(r) for r in cur.fetchall()]
-        except sqlite3.OperationalError:
-            unmatched = []
-    finally:
-        conn.close()
+    results_data = read_adaptive_table(
+        results_path, _RESULTS_COLUMN_MAP, "results",
+        row_factory=sqlite3.Row,
+    )
+
+    unmatched = read_adaptive_table(
+        results_path, _UNMATCHED_COLUMN_MAP, "unmatched",
+        row_factory=sqlite3.Row,
+    )
 
     if not db1_path or not db2_path:
         return dumps({
@@ -229,7 +223,7 @@ def find_patch_root(
 
     changed_addrs = set()
     addr_to_result = {}
-    for r in results:
+    for r in results_data:
         a2 = r.get("address2", "")
         if a2:
             a2n = norm_addr(a2)

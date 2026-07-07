@@ -18,6 +18,7 @@ import psutil
 
 from ..config import IDAT_PATH, DIAPHORA_DIR, HEADLESS_WRAPPER, DIAPHORA_SCRIPT, PYTHON
 from ..utils.sqlite import check_db, check_db_for_diff, force_delete_file
+from ..utils.connection import get_connection
 from ..utils.log import ExportLogger, OperationLogger
 from ..utils.format import dumps, err_json
 
@@ -221,19 +222,15 @@ async def run_export(
 
         # Post-check: program table must be filled for diff to work
         try:
-            import sqlite3
-            _pc = sqlite3.connect(output_path)
-            try:
-                _pcur = _pc.cursor()
-                _pcur.execute("SELECT count(*) FROM program")
-                if _pcur.fetchone()[0] == 0:
-                    log.warn(
-                        "Export incomplete: program table is empty. "
-                        "Callgraph metadata not written — diff will fail on this database. "
-                        "This happens when IDA crashes during finalization (see Problems.md #3)."
-                    )
-            finally:
-                _pc.close()
+            _pc = get_connection(output_path)
+            _pcur = _pc.cursor()
+            _pcur.execute("SELECT count(*) FROM program")
+            if _pcur.fetchone()[0] == 0:
+                log.warn(
+                    "Export incomplete: program table is empty. "
+                    "Callgraph metadata not written — diff will fail on this database. "
+                    "This happens when IDA crashes during finalization (see Problems.md #3)."
+                )
         except Exception:
             pass
 
@@ -653,21 +650,17 @@ async def export_idb_to_diaphora(
 
     # Check if program table was filled (required for diff)
     try:
-        import sqlite3
-        _c = sqlite3.connect(output_path)
-        try:
-            _r = _c.execute("SELECT count(*) FROM program").fetchone()[0]
-            if _r == 0:
-                prog_warn = (
-                    "Export incomplete: program table is empty. "
-                    "Diff will fail – see Problems.md #3."
-                )
-                if "warning" in result:
-                    result["warning"] += " " + prog_warn
-                else:
-                    result["warning"] = prog_warn
-        finally:
-            _c.close()
+        _c = get_connection(output_path)
+        _r = _c.execute("SELECT count(*) FROM program").fetchone()[0]
+        if _r == 0:
+            prog_warn = (
+                "Export incomplete: program table is empty. "
+                "Diff will fail – see Problems.md #3."
+            )
+            if "warning" in result:
+                result["warning"] += " " + prog_warn
+            else:
+                result["warning"] = prog_warn
     except Exception:
         pass
 
@@ -765,6 +758,17 @@ async def batch_export_and_diff(
                     # Step 3: diff
                     batch_log.info("Starting diff...")
                     try:
+                        from ..utils.connection import close_connection
+                        close_connection(sqlite1)
+                        close_connection(sqlite2)
+                        close_connection(diff_out)
+                        # Remove old .diaphora file so Diaphora can write new one without PermissionError
+                        for old_path in [diff_out, f"{diff_out}-wal", f"{diff_out}-shm"]:
+                            try:
+                                if os.path.isfile(old_path):
+                                    os.remove(old_path)
+                            except Exception:
+                                pass
                         proc = subprocess.run(
                             [PYTHON, DIAPHORA_SCRIPT, sqlite1, sqlite2, "-o", diff_out],
                             cwd=DIAPHORA_DIR,
@@ -830,9 +834,9 @@ async def batch_export_and_diff(
 
         finally:
             if cleanup:
-                batch_log.info("Cleaning up temporary SQLite and WAL databases...")
-                for path in [sqlite1, f"{sqlite1}-wal", f"{sqlite1}-shm",
-                             sqlite2, f"{sqlite2}-wal", f"{sqlite2}-shm"]:
+                batch_log.info("Cleaning up transient SQLite WAL/SHM files...")
+                for path in [f"{sqlite1}-wal", f"{sqlite1}-shm",
+                             f"{sqlite2}-wal", f"{sqlite2}-shm"]:
                     try:
                         if os.path.exists(path):
                             force_delete_file(path)

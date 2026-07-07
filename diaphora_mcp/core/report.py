@@ -10,7 +10,8 @@ import json
 import os
 import sqlite3
 
-from ..utils.sqlite import get_func, get_funcs_batch, get_underlying_db_paths
+from ..utils.sqlite import get_func, get_funcs_batch, get_underlying_db_paths, read_adaptive_table, _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP
+from ..utils.connection import get_connection
 from ..core.security import match_security_keywords
 from ..utils.format import dumps, err_json
 
@@ -24,16 +25,20 @@ def summarize_patch(
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 
-    conn = sqlite3.connect(results_path)
-    try:
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+    conn = get_connection(results_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
 
-        config_info = dict(cur.execute("SELECT * FROM config").fetchone() or {})
-        results = [dict(r) for r in cur.execute("SELECT * FROM results").fetchall()]
-        unmatched = [dict(r) for r in cur.execute("SELECT * FROM unmatched").fetchall()]
-    finally:
-        conn.close()
+    config_info = dict(cur.execute("SELECT * FROM config").fetchone() or {})
+
+    results = read_adaptive_table(
+        results_path, _RESULTS_COLUMN_MAP, "results",
+        row_factory=sqlite3.Row,
+    )
+    unmatched = read_adaptive_table(
+        results_path, _UNMATCHED_COLUMN_MAP, "unmatched",
+        row_factory=sqlite3.Row,
+    )
 
     # Statistics
     total = len(results)
@@ -73,28 +78,28 @@ def summarize_patch(
     prog1 = prog2 = {}
     if db1_path:
         try:
-            conn1 = sqlite3.connect(db1_path)
-            try:
-                cur1 = conn1.cursor()
-                cur1.execute("SELECT * FROM program")
-                row = cur1.fetchone()
-                if row:
-                    prog1 = dict(zip([d[0] for d in cur1.description], row))
-            finally:
-                conn1.close()
+            conn1 = get_connection(db1_path)
+            cur1 = conn1.cursor()
+            cur1.execute(
+                "SELECT id, callgraph_primes, callgraph_all_primes, "
+                "processor, md5sum FROM program"
+            )
+            row = cur1.fetchone()
+            if row:
+                prog1 = dict(zip([d[0] for d in cur1.description], row))
         except Exception:
             pass
     if db2_path:
         try:
-            conn2 = sqlite3.connect(db2_path)
-            try:
-                cur2 = conn2.cursor()
-                cur2.execute("SELECT * FROM program")
-                row = cur2.fetchone()
-                if row:
-                    prog2 = dict(zip([d[0] for d in cur2.description], row))
-            finally:
-                conn2.close()
+            conn2 = get_connection(db2_path)
+            cur2 = conn2.cursor()
+            cur2.execute(
+                "SELECT id, callgraph_primes, callgraph_all_primes, "
+                "processor, md5sum FROM program"
+            )
+            row = cur2.fetchone()
+            if row:
+                prog2 = dict(zip([d[0] for d in cur2.description], row))
         except Exception:
             pass
 

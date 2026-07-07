@@ -9,7 +9,8 @@ import json
 import os
 import sqlite3
 
-from ..utils.sqlite import get_func, get_funcs_batch, get_underlying_db_paths
+from ..utils.sqlite import get_func, get_funcs_batch, get_underlying_db_paths, read_adaptive_table, _RESULTS_COLUMN_MAP
+from ..utils.connection import get_connection
 from ..utils.format import pseudocode_simple_diff, dumps, err_json
 from ..core.security import match_security_keywords
 
@@ -55,16 +56,15 @@ def rank_changes(
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 
-    conn = sqlite3.connect(results_path)
-    try:
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM results")
-        all_rows = [dict(r) for r in cur.fetchall()]
-        cur.execute("SELECT * FROM config")
-        config_info = dict(cur.fetchone() or {})
-    finally:
-        conn.close()
+    all_rows = read_adaptive_table(
+        results_path, _RESULTS_COLUMN_MAP, "results",
+        row_factory=sqlite3.Row,
+    )
+
+    conn = get_connection(results_path)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM config")
+    config_info = dict(cur.fetchone() or {})
 
     ranked = []
 

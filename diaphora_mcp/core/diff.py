@@ -13,7 +13,13 @@ import threading
 import time
 
 from ..config import DIAPHORA_SCRIPT, DIAPHORA_DIR, PYTHON
-from ..utils.sqlite import check_db, check_db_for_diff
+from ..utils.sqlite import (
+    check_db, check_db_for_diff,
+    read_adaptive_table,
+    get_table_columns,
+    _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP,
+)
+from ..utils.connection import get_connection
 from ..utils.log import OperationLogger, log_path, write_log
 from ..models import MATCH_TYPES
 from ..utils.format import dumps, err_json
@@ -29,61 +35,110 @@ def read_results(
     limit: int = 500,
     unmatched_limit: int = 100,
 ):
-    """Read a .diaphora results file and return structured data."""
-    conn = sqlite3.connect(results_path)
+    """Read a .diaphora results file and return structured data.
+
+    Schema-adaptive: detects available columns and maps known variants
+    (address/addr1, address2/addr2, ratio/similarity, etc.).
+    """
+    conn = get_connection(results_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM config")
+    config_info = dict(cur.fetchone() or {})
+
+    # Build adaptive WHERE clause for match_type filter
+    mtypes = MATCH_TYPES.get(match_type, MATCH_TYPES["all"])
+    available_cols = get_table_columns(results_path, "results")
+
+    # Determine the actual column name for "type"
+    type_col = "type"
+    if type_col not in available_cols:
+        for variant in ["match_type", "result_type"]:
+            if variant in available_cols:
+                type_col = variant
+                break
+
+    placeholders = ",".join("?" for _ in mtypes)
+    effective_limit = min(limit or 500, 5000) if limit and limit > 0 else 500
+
+    # Build safe ORDER BY — use available ratio column
+    ratio_col = "ratio"
+    if ratio_col not in available_cols:
+        for variant in ["similarity", "match_ratio", "confidence"]:
+            if variant in available_cols:
+                ratio_col = variant
+                break
+
+    # Read results using adaptive column detection
+    extra_where = f"{type_col} IN ({placeholders})"
+    if min_ratio > 0:
+        extra_where += f" AND CAST({ratio_col} AS REAL) >= ?"
+        raw_results = read_adaptive_table(
+            results_path, _RESULTS_COLUMN_MAP, "results",
+            extra_where=extra_where,
+            params=tuple(mtypes) + (min_ratio,),
+            row_factory=sqlite3.Row,
+        )
+        # Filter by mtypes and min_ratio in Python (the SQL WHERE may not match
+        # column names exactly after adaptive mapping)
+        raw_results = [
+            r for r in raw_results
+            if r.get("type") in mtypes
+        ]
+        # Sort by ratio descending, handling None/string
+        def _ratio_key(r):
+            v = r.get("ratio")
+            try:
+                return float(v) if v is not None else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+        raw_results.sort(key=_ratio_key, reverse=True)
+        raw_results = raw_results[:effective_limit]
+    else:
+        raw_results = read_adaptive_table(
+            results_path, _RESULTS_COLUMN_MAP, "results",
+            extra_where=extra_where,
+            params=tuple(mtypes),
+            row_factory=sqlite3.Row,
+        )
+        raw_results = [r for r in raw_results if r.get("type") in mtypes]
+        def _ratio_key(r):
+            v = r.get("ratio")
+            try:
+                return float(v) if v is not None else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+        raw_results.sort(key=_ratio_key, reverse=True)
+        raw_results = raw_results[:effective_limit]
+
+    # Counts via GROUP BY (always works regardless of column names)
+    counts = {"best": 0, "partial": 0, "unreliable": 0, "multimatch": 0}
     try:
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+        cur.execute(f"SELECT {type_col}, count(*) as cnt FROM results GROUP BY {type_col}")
+        for row in cur.fetchall():
+            t = row[0] if not isinstance(row, dict) else row.get(type_col)
+            if t in counts:
+                counts[t] = row["cnt"] if isinstance(row, dict) else row[1]
+    except Exception:
+        pass
 
-        cur.execute("SELECT * FROM config")
-        config_info = dict(cur.fetchone() or {})
+    # Read unmatched with adaptive columns
+    unmatched = read_adaptive_table(
+        results_path, _UNMATCHED_COLUMN_MAP, "unmatched",
+        row_factory=sqlite3.Row,
+    )
 
-        mtypes = MATCH_TYPES.get(match_type, MATCH_TYPES["all"])
-        placeholders = ",".join("?" for _ in mtypes)
-
-        # Enforce query-level LIMIT to avoid loading thousands of rows into memory
-        effective_limit = min(limit or 500, 5000) if limit and limit > 0 else 500
-
-        if min_ratio > 0:
-            sql = (
-                f"SELECT address, name, address2, name2, ratio, type, "
-                f"nodes1, nodes2, description "
-                f"FROM results WHERE type IN ({placeholders}) AND ratio >= ?"
-                f" ORDER BY ratio DESC LIMIT ?"
-            )
-            params = [*mtypes, min_ratio, effective_limit]
-        else:
-            sql = (
-                f"SELECT address, name, address2, name2, ratio, type, "
-                f"nodes1, nodes2, description "
-                f"FROM results WHERE type IN ({placeholders})"
-                f" ORDER BY ratio DESC LIMIT ?"
-            )
-            params = [*mtypes, effective_limit]
-
-        cur.execute(sql, params)
-        results = [dict(r) for r in cur.fetchall()]
-
-        counts = {}
-        for t in ["best", "partial", "unreliable", "multimatch"]:
-            cur.execute("SELECT count(*) FROM results WHERE type = ?", (t,))
-            counts[t] = cur.fetchone()[0]
-
-        cur.execute("SELECT * FROM unmatched")
-        unmatched = [dict(r) for r in cur.fetchall()]
-    finally:
-        conn.close()
-
-    res_slice = results[:limit] if (limit is not None and limit > 0) else results
+    res_slice = raw_results[:limit] if (limit is not None and limit > 0) else raw_results
     unm_slice = unmatched[:unmatched_limit] if (unmatched_limit is not None and unmatched_limit > 0) else unmatched
 
     return {
         "config": config_info,
         "counts": counts,
-        "total_matches": len(results),
+        "total_matches": len(raw_results),
         "unmatched_count": len(unmatched),
         "results": res_slice,
-        "truncated": len(results) > len(res_slice),
+        "truncated": len(raw_results) > len(res_slice),
         "unmatched": unm_slice,
         "unmatched_truncated": len(unmatched) > len(unm_slice),
     }
@@ -123,6 +178,10 @@ def diff_diaphora_dbs(
         stderr_str = ""
 
         try:
+            from ..utils.connection import close_connection
+            close_connection(db1_path)
+            close_connection(db2_path)
+            close_connection(output_path)
             start = time.time()
             proc = subprocess.Popen(
                 [PYTHON, DIAPHORA_SCRIPT, db1_path, db2_path, "-o", output_path],
@@ -191,16 +250,13 @@ def diff_diaphora_dbs(
 
         # Read result stats for the log
         try:
-            conn = sqlite3.connect(output_path)
-            try:
-                cur = conn.cursor()
-                cur.execute("SELECT type, count(*) FROM results GROUP BY type")
-                counts = dict(cur.fetchall())
-                log.info(f"Matches: {counts}")
-                cur.execute("SELECT count(*) FROM unmatched")
-                log.info(f"Unmatched: {cur.fetchone()[0]}")
-            finally:
-                conn.close()
+            conn = get_connection(output_path)
+            cur = conn.cursor()
+            cur.execute("SELECT type, count(*) FROM results GROUP BY type")
+            counts = dict(cur.fetchall())
+            log.info(f"Matches: {counts}")
+            cur.execute("SELECT count(*) FROM unmatched")
+            log.info(f"Unmatched: {cur.fetchone()[0]}")
         except Exception:
             pass
 
@@ -231,44 +287,62 @@ def get_diff_summary(results_path: str) -> str:
     if not os.path.isfile(results_path):
         return err_json(f"Results file not found: {results_path}")
 
-    conn = sqlite3.connect(results_path)
+    conn = get_connection(results_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM config")
+    config_info = dict(cur.fetchone() or {})
+
+    available = get_table_columns(results_path, "results")
+    # Determine the actual type and ratio column names
+    type_col = "type" if "type" in available else "match_type"
+    ratio_col = "ratio" if "ratio" in available else "similarity"
+
+    # Safe aggregation — use the actual type column
+    agg_sql = (
+        f"SELECT {type_col} as type, count(*) as cnt, "
+        f"round(avg(CAST({ratio_col} AS REAL)), 4) as avg_ratio, "
+        f"round(max(CAST({ratio_col} AS REAL)), 4) as max_ratio, "
+        f"round(min(CAST({ratio_col} AS REAL)), 4) as min_ratio "
+        f"FROM results GROUP BY {type_col}"
+    )
     try:
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-
-        cur.execute("SELECT * FROM config")
-        config_info = dict(cur.fetchone() or {})
-
-        cur.execute(
-            """SELECT type, count(*) as cnt,
-                      round(avg(ratio), 4) as avg_ratio,
-                      round(max(ratio), 4) as max_ratio,
-                      round(min(ratio), 4) as min_ratio
-               FROM results GROUP BY type"""
-        )
+        cur.execute(agg_sql)
         type_stats = [dict(r) for r in cur.fetchall()]
+    except Exception:
+        type_stats = []
 
-        cur.execute(
-            "SELECT * FROM results WHERE type='best' ORDER BY ratio DESC LIMIT 10"
-        )
-        top_best = [dict(r) for r in cur.fetchall()]
+    # Read top best and partial using adaptive approach
+    where_best = f"{type_col} = 'best'"
+    best_results = read_adaptive_table(
+        results_path, _RESULTS_COLUMN_MAP, "results",
+        extra_where=where_best,
+        row_factory=sqlite3.Row,
+    )[:10]
 
-        cur.execute(
-            "SELECT * FROM results WHERE type='partial' ORDER BY ratio DESC LIMIT 10"
-        )
-        top_partial = [dict(r) for r in cur.fetchall()]
+    where_partial = f"{type_col} = 'partial'"
+    partial_results = read_adaptive_table(
+        results_path, _RESULTS_COLUMN_MAP, "results",
+        extra_where=where_partial,
+        row_factory=sqlite3.Row,
+    )[:10]
 
-        cur.execute("SELECT type, count(*) FROM unmatched GROUP BY type")
+    # Unmatched counts
+    try:
+        avail_unmatched = get_table_columns(results_path, "unmatched")
+        utype_col = "type" if "type" in avail_unmatched else "match_type"
+        cur.execute(f"SELECT {utype_col}, count(*) FROM unmatched GROUP BY {utype_col}")
         unmatched = [dict(zip(["type", "count"], r)) for r in cur.fetchall()]
-    finally:
-        conn.close()
+    except Exception:
+        unmatched = []
 
     return dumps(
         {
             "config": config_info,
             "match_statistics": type_stats,
             "unmatched": unmatched,
-            "top_best_matches": top_best,
-            "top_partial_matches": top_partial,
+            "top_best_matches": best_results,
+            "top_partial_matches": partial_results,
         }
     )

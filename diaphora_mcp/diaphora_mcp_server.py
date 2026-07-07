@@ -31,6 +31,7 @@ from .core.graph import get_changed_callgraph as _get_changed_callgraph
 from .core.graph import compare_call_path as _compare_call_path
 from .core.graph import find_patch_root as _find_patch_root
 from .core.metadata import transfer_metadata as _transfer_metadata
+from .core.performance import performance_report as _performance_report
 
 # ---------------------------------------------------------------------------
 # MCP server
@@ -148,6 +149,13 @@ mcp.tool(
 mcp.tool(
     description="Selectively transfer metadata (names, comments, prototypes, types) from one exported database to another. Returns structured data ready for IDA Pro MCP application."
 )(_transfer_metadata)
+
+# ---------------------------------------------------------------------------
+# Tools — Performance
+# ---------------------------------------------------------------------------
+mcp.tool(
+    description="Return aggregated performance report: memory, cache state, and connection stats."
+)(_performance_report)
 
 # ---------------------------------------------------------------------------
 # Entry point
