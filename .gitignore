@@ -35,5 +35,6 @@ debug_*.py
 *.egg-info/
 *.egg-info
 
-# Local dev and binary fixes folder
+# Development scratch files (not part of the package)
+scratch/
 Fixes/
