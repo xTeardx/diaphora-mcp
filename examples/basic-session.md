@@ -476,16 +476,6 @@ get_changed_callgraph(db1_path="old.sqlite", db2_path="new.sqlite",
                       name="MyFunction", name2="MyFunction")
 ```
 
-### Test Fixtures in This Repository
-
-The `Fixes/` directory contains:
-- `sqlite3_aimp.dll.i64` — SQLite 2015, analyzed by IDA
-- `sqlite3_python.dll.i64` — SQLite 2023, analyzed by IDA
-- Both `.diaphora.sqlite` files (pre-exported, optional)
-- `.diaphora` diff result (pre-computed, optional)
-
-To re-export from scratch, just run `batch_export_and_diff` on the two `.i64` files.
-
 ---
 
 ## File Index
