@@ -7,6 +7,7 @@ to automatically start the listener on port 28652 at IDA startup.
 import os
 import sys
 import threading
+import uuid
 from xmlrpc.server import SimpleXMLRPCServer
 import idaapi
 
@@ -59,8 +60,30 @@ class DiaphoraGuiAPI:
         """Return the API version of this listener. 2 = summaries_only supported."""
         return 2
 
+    def get_idb_path(self) -> str:
+        """Return the absolute path of the currently open IDB."""
+        return idaapi.get_idb_path()
+
     def export_current_db(self, output_path: str, use_decompiler: bool, summaries_only: bool = False) -> bool | str:
         """Triggers export of the active database in the main IDA GUI thread."""
+        current_idb = os.path.realpath(idaapi.get_idb_path())
+        configured_root = os.path.realpath(
+            os.environ.get("DIAPHORA_OUTPUT_ROOT") or os.path.dirname(current_idb)
+        )
+        target = os.path.realpath(output_path)
+        try:
+            if os.path.commonpath([configured_root, target]) != configured_root:
+                return f"Output path must be inside the configured output root: {configured_root}"
+        except ValueError:
+            return "Output path is on a different volume from the configured output root"
+        if os.path.lexists(output_path):
+            return f"Refusing to overwrite existing output path: {output_path}"
+        target_output_path = output_path
+        target = os.path.abspath(output_path)
+        staged_output_path = os.path.join(
+            os.path.dirname(target),
+            f".{os.path.basename(target)}.{uuid.uuid4().hex}.tmp",
+        )
         print(
             f"[Diaphora MCP] Export request received: out={output_path}, decomp={use_decompiler}, summaries={summaries_only}"
         )
@@ -68,7 +91,7 @@ class DiaphoraGuiAPI:
         def do_export() -> bool | str:
             # Set environment variables that Diaphora checks for auto-export
             os.environ["DIAPHORA_AUTO"] = "1"
-            os.environ["DIAPHORA_EXPORT_FILE"] = output_path
+            os.environ["DIAPHORA_EXPORT_FILE"] = staged_output_path
             if use_decompiler:
                 os.environ["DIAPHORA_USE_DECOMPILER"] = "1"
             else:
@@ -113,7 +136,30 @@ class DiaphoraGuiAPI:
 
         # Run safely in the main thread of IDA GUI
         result = idaapi.execute_sync(do_export, idaapi.MFF_WRITE)
-        return result
+        if result is not True:
+            try:
+                if os.path.lexists(staged_output_path):
+                    os.remove(staged_output_path)
+            except OSError:
+                pass
+            return result
+        if not os.path.isfile(staged_output_path):
+            if os.path.lexists(target_output_path):
+                return f"Refusing to overwrite existing output path: {target_output_path}"
+            return "Export completed without producing a staged output file"
+        try:
+            os.link(staged_output_path, target_output_path)
+        except FileExistsError:
+            return f"Refusing to overwrite existing output path: {target_output_path}"
+        except OSError as exc:
+            return f"Failed to publish export output: {exc}"
+        finally:
+            try:
+                if os.path.lexists(staged_output_path):
+                    os.remove(staged_output_path)
+            except OSError:
+                pass
+        return True
 
 
 server = None

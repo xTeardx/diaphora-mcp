@@ -17,12 +17,31 @@ from ..utils.sqlite import (
     check_db, check_db_for_diff,
     read_adaptive_table,
     get_table_columns,
+    check_results_db,
     _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP,
 )
 from ..utils.connection import get_connection
 from ..utils.log import OperationLogger, log_path, write_log
 from ..models import MATCH_TYPES
 from ..utils.format import dumps, err_json
+
+
+def _kill_and_reap(proc) -> None:
+    """Остановить дочерний процесс и bounded-образом дождаться его завершения."""
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except (Exception, subprocess.TimeoutExpired):
+            pass
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +241,7 @@ def diff_diaphora_dbs(
                 log.log_subprocess_output(stdout_str, stderr_str)
 
         except subprocess.TimeoutExpired:
-            proc.kill()
+            _kill_and_reap(proc)
             log.error("Diff timed out after 3600 s")
             result_data = {"error": "Diaphora diff timed out after 3600 s"}
         except FileNotFoundError:
@@ -273,6 +292,8 @@ def get_diff_results(
     """Return matches from a .diaphora results file, optionally filtered."""
     if not os.path.isfile(results_path):
         return err_json(f"Results file not found: {results_path}")
+    if (err := check_results_db(results_path)):
+        return err_json(err)
 
     try:
         return dumps(
@@ -286,6 +307,8 @@ def get_diff_summary(results_path: str) -> str:
     """Return match statistics, top matches, and unmatched counts."""
     if not os.path.isfile(results_path):
         return err_json(f"Results file not found: {results_path}")
+    if (err := check_results_db(results_path)):
+        return err_json(err)
 
     conn = get_connection(results_path)
     conn.row_factory = sqlite3.Row

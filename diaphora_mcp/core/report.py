@@ -10,7 +10,7 @@ import json
 import os
 import sqlite3
 
-from ..utils.sqlite import get_func, get_funcs_batch, get_underlying_db_paths, read_adaptive_table, _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP
+from ..utils.sqlite import check_results_db, get_func, get_funcs_batch, get_underlying_db_paths, read_adaptive_table, _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP
 from ..utils.connection import get_connection
 from ..core.security import match_security_keywords
 from ..utils.format import dumps, err_json
@@ -22,6 +22,8 @@ def summarize_patch(
     """Create a full patch analysis report from a .diaphora results file."""
     if not os.path.isfile(results_path):
         return err_json(f"Results file not found: {results_path}")
+    if (err := check_results_db(results_path)):
+        return err_json(err)
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 

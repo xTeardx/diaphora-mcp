@@ -9,7 +9,7 @@ import os
 import sqlite3
 
 from ..models import SECURITY_KEYWORDS, SECURITY_KEYWORD_CATEGORIES
-from ..utils.sqlite import get_underlying_db_paths, get_func, get_funcs_batch, read_adaptive_table, _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP
+from ..utils.sqlite import check_results_db, get_underlying_db_paths, get_func, get_funcs_batch, read_adaptive_table, _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP
 from ..utils.connection import get_connection
 from ..utils.format import dumps, err_json
 
@@ -62,6 +62,8 @@ def analyze_diff_results(
     """
     if not os.path.isfile(results_path):
         return err_json(f"Results file not found: {results_path}")
+    if (err := check_results_db(results_path)):
+        return err_json(err)
 
     conn = get_connection(results_path)
     conn.row_factory = sqlite3.Row
@@ -231,6 +233,8 @@ def detect_security_patches(
     """
     if not os.path.isfile(results_path):
         return err_json(f"Results file not found: {results_path}")
+    if (err := check_results_db(results_path)):
+        return err_json(err)
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 

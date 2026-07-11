@@ -8,7 +8,7 @@ and root-cause detection via dependency-chain analysis.
 import os
 import sqlite3
 
-from ..utils.sqlite import check_db, get_func, get_callgraph, resolve_func_names, get_underlying_db_paths, norm_addr, read_adaptive_table, _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP
+from ..utils.sqlite import check_db, check_results_db, get_func, get_callgraph, resolve_func_names, get_underlying_db_paths, norm_addr, read_adaptive_table, _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP
 from ..utils.connection import get_connection, get_cache_manager
 from ..utils.format import dumps, err_json
 from .repository import IndexedDatabase, CallGraphEngine
@@ -203,6 +203,8 @@ def find_patch_root(
     """
     if not os.path.isfile(results_path):
         return err_json(f"Results file not found: {results_path}")
+    if (err := check_results_db(results_path)):
+        return err_json(err)
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 

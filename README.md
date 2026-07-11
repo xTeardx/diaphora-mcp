@@ -40,6 +40,7 @@ The package tries to **automatically find** IDA Pro and Diaphora in standard ins
 |-----------|-------------|---------|
 | `IDAT_PATH` | Full path to idat.exe | `C:\Program Files\IDA Pro 9.3\idat.exe` |
 | `DIAPHORA_DIR` | Folder containing diaphora.py | `C:\Program Files\IDA Pro 9.3\plugins\diaphora-3.4.1` |
+| `DIAPHORA_OUTPUT_ROOT` | Root directory allowed for new export files | `D:\\diaphora-outputs` |
 | `DIAPHORA_PYTHON` | Python interpreter for diff | `/usr/bin/python3` (defaults to sys.executable) |
 
 For Claude Code, you can specify them in `~/.claude.json` (or the corresponding config file of your MCP client):
@@ -164,7 +165,7 @@ diaphora-mcp/
 └── logs/                           # Automated export logs (created dynamically)
 ```
 
-## MCP Tools Reference (20 tools)
+## MCP Tools Reference (21 tools)
 
 ### Export
 | Tool | Description |
@@ -208,6 +209,11 @@ diaphora-mcp/
 | `get_changed_callgraph` | Compares incoming and outgoing calls of a function |
 | `compare_call_path` | Walks callgraph from a function (BFS call path comparison, up to N levels) |
 | `find_patch_root` | Detects root-cause functions causing call cascades |
+
+### Performance
+| Tool | Description |
+|------|-------------|
+| `performance_report` | Returns aggregated memory, cache, and connection statistics |
 
 ### Metadata
 | Tool | Description |

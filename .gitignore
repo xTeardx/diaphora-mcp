@@ -24,17 +24,22 @@ venv/
 *.asm
 *.log
 
-# Project-specific logs and test artifacts
+# Project-specific logs and local test artifacts
 logs/
 verify_*.py
-test_*.py
 debug_*.py
 .claude/
+
+# Local IDA fixtures and generated audit reports
+Fixes/
+audit_artifacts/
 
 # Python package build artifacts
 *.egg-info/
 *.egg-info
+dist/
+build/
+uv.lock
 
 # Development scratch files (not part of the package)
 scratch/
-Fixes/

@@ -9,7 +9,7 @@ import json
 import os
 import sqlite3
 
-from ..utils.sqlite import get_func, get_funcs_batch, get_underlying_db_paths, read_adaptive_table, _RESULTS_COLUMN_MAP
+from ..utils.sqlite import check_results_db, get_func, get_funcs_batch, get_underlying_db_paths, read_adaptive_table, _RESULTS_COLUMN_MAP
 from ..utils.connection import get_connection
 from ..utils.format import pseudocode_simple_diff, dumps, err_json
 from ..core.security import match_security_keywords
@@ -53,6 +53,8 @@ def rank_changes(
     importance score (0–100)."""
     if not os.path.isfile(results_path):
         return err_json(f"Results file not found: {results_path}")
+    if (err := check_results_db(results_path)):
+        return err_json(err)
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 

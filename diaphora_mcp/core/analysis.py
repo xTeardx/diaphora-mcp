@@ -8,7 +8,7 @@ import json
 import os
 import sqlite3
 
-from ..utils.sqlite import check_db, get_func, get_funcs_batch, get_callgraph, resolve_func_names, norm_addr, _detect_decimal
+from ..utils.sqlite import check_db, get_func, get_funcs_batch, get_callgraph, resolve_func_names, norm_addr, _detect_decimal, get_query_addresses
 from ..utils.connection import get_connection
 from ..utils.format import pseudocode_simple_diff, func_features, dumps, err_json
 
@@ -117,34 +117,14 @@ def get_function_pseudocode(
     cur = conn.cursor()
 
     if address:
-        addr = norm_addr(address, False)
-        if _detect_decimal(conn):
-            addr_dec = None
-            try:
-                addr_dec = str(int(addr, 16))
-            except ValueError:
-                pass
-            if addr_dec and addr_dec != addr:
-                cur.execute(
-                    """SELECT name, address, pseudocode, assembly, prototype,
-                              instructions, cyclomatic_complexity
-                       FROM functions WHERE address = ? OR address = ?""",
-                    (addr_dec, addr),
-                )
-            else:
-                cur.execute(
-                    """SELECT name, address, pseudocode, assembly, prototype,
-                              instructions, cyclomatic_complexity
-                       FROM functions WHERE address = ?""",
-                    (addr,),
-                )
-        else:
-            cur.execute(
-                """SELECT name, address, pseudocode, assembly, prototype,
-                          instructions, cyclomatic_complexity
-                   FROM functions WHERE address = ?""",
-                (addr,),
-            )
+        addrs = get_query_addresses(conn, address)
+        placeholders = ",".join("?" for _ in addrs)
+        cur.execute(
+            f"""SELECT name, address, pseudocode, assembly, prototype,
+                       instructions, cyclomatic_complexity
+                FROM functions WHERE address IN ({placeholders})""",
+            addrs,
+        )
     elif name:
         cur.execute(
             """SELECT name, address, pseudocode, assembly, prototype,
@@ -224,18 +204,14 @@ def compare_functions(
         cur = conn.cursor()
 
         if lookup_addr:
-            addr = norm_addr(lookup_addr)
-            if _detect_decimal(conn):
-                try:
-                    addr = str(int(addr, 16))
-                except ValueError:
-                    pass
+            addrs = get_query_addresses(conn, lookup_addr)
+            placeholders = ",".join("?" for _ in addrs)
             cur.execute(
-                """SELECT name, address, pseudocode, assembly, prototype,
-                          instructions, cyclomatic_complexity, nodes, edges,
-                          bytes_hash, constants
-                   FROM functions WHERE address = ?""",
-                (addr,),
+                f"""SELECT name, address, pseudocode, assembly, prototype,
+                           instructions, cyclomatic_complexity, nodes, edges,
+                           bytes_hash, constants
+                    FROM functions WHERE address IN ({placeholders})""",
+                addrs,
             )
         elif lookup_name:
             cur.execute(

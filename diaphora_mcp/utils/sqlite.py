@@ -10,7 +10,7 @@ import sqlite3
 import subprocess
 import time
 
-from .connection import get_connection
+from .connection import close_connection, get_connection
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +177,43 @@ def _detect_decimal(conn) -> bool:
     return False
 
 
+def get_query_addresses(conn_or_use_decimal, address: str) -> list[str]:
+    """Get candidate address strings to query in the database.
+
+    If the database uses decimal representation, this will return both the
+    decimal string and the normalized hex string to ensure matches regardless of
+    whether the input is hex or decimal, avoiding incorrect conversions.
+    """
+    if isinstance(conn_or_use_decimal, bool):
+        use_decimal = conn_or_use_decimal
+    else:
+        use_decimal = _detect_decimal(conn_or_use_decimal)
+
+    addr_hex = norm_addr(address, False)
+    if not use_decimal:
+        return [addr_hex]
+
+    candidates = []
+    # If the input was decimal, keep it as is
+    addr_clean = address.strip().lower()
+    if addr_clean.isdigit():
+        candidates.append(addr_clean)
+
+    # Also try to convert hex to decimal
+    try:
+        addr_dec = str(int(addr_hex, 16))
+        if addr_dec not in candidates:
+            candidates.append(addr_dec)
+    except ValueError:
+        pass
+
+    if addr_hex not in candidates:
+        candidates.append(addr_hex)
+
+    return candidates
+
+
+
 def force_delete_file(path: str, retries: int = 3) -> bool:
     """Safely delete a file on Windows, killing idat.exe if locked."""
     if not os.path.exists(path):
@@ -212,6 +249,7 @@ def check_db(path: str) -> str | None:
         conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
         conn.execute("SELECT count(*) FROM functions")
     except Exception as exc:
+        close_connection(path)
         return f"Not a valid Diaphora export database: {path}\n{exc}"
     return None
 
@@ -228,30 +266,76 @@ def check_db_for_diff(path: str) -> str | None:
     if err:
         return err
 
-    conn = get_connection(path)
-    cur = conn.cursor()
-    cur.execute("SELECT count(*) FROM functions")
-    funcs = cur.fetchone()[0]
-    if funcs == 0:
-        return f"Database has 0 functions (export incomplete or empty)"
+    try:
+        conn = get_connection(path)
+        cur = conn.cursor()
+        tables = {
+            row[0]
+            for row in cur.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if "program" not in tables:
+            close_connection(path)
+            return "Unsupported diff schema: required table 'program' is missing"
 
-    cur.execute("SELECT count(*) FROM program")
-    prog_rows = cur.fetchone()[0]
-    if prog_rows == 0:
-        return (
-            f"Database export incomplete: program table is empty "
-            f"(export likely crashed before finalization). "
-            f"Found {funcs} functions but missing callgraph metadata."
+        cur.execute("SELECT count(*) FROM functions")
+        funcs = cur.fetchone()[0]
+        if funcs == 0:
+            close_connection(path)
+            return f"Database has 0 functions (export incomplete or empty)"
+
+        cur.execute("SELECT count(*) FROM program")
+        prog_rows = cur.fetchone()[0]
+        if prog_rows == 0:
+            close_connection(path)
+            return (
+                f"Database export incomplete: program table is empty "
+                f"(export likely crashed before finalization). "
+                f"Found {funcs} functions but missing callgraph metadata."
+            )
+
+        cur.execute(
+            "SELECT callgraph_primes FROM program "
+            "WHERE callgraph_primes IS NOT NULL AND callgraph_primes != ''"
         )
+        if cur.fetchone() is None:
+            close_connection(path)
+            return "Database export incomplete: callgraph_primes is empty in program table"
 
-    cur.execute(
-        "SELECT callgraph_primes FROM program "
-        "WHERE callgraph_primes IS NOT NULL AND callgraph_primes != ''"
-    )
-    if cur.fetchone() is None:
-        return f"Database export incomplete: callgraph_primes is empty in program table"
+        return None
+    except sqlite3.Error as exc:
+        close_connection(path)
+        return f"Unsupported diff schema: {exc}"
 
-    return None
+
+def check_results_db(path: str) -> str | None:
+    """Проверить, что файл является diff-results SQLite-базой Diaphora."""
+    if not os.path.isfile(path):
+        return f"Results file not found: {path}"
+
+    conn = None
+    try:
+        conn = sqlite3.connect(path, timeout=10)
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        missing = [name for name in ("config", "results") if name not in tables]
+        if missing:
+            return (
+                f"Not a valid Diaphora diff results database: {path}\n"
+                f"missing required table(s): {', '.join(missing)}"
+            )
+        return None
+    except sqlite3.DatabaseError as exc:
+        return f"Not a valid Diaphora diff results database: {path}\n{exc}"
+    finally:
+        if conn is not None:
+            conn.close()
+        close_connection(path)
 
 
 def get_funcs_batch(db_path: str, addresses: list[str]) -> dict[str, dict]:
@@ -285,16 +369,8 @@ def get_funcs_batch(db_path: str, addresses: list[str]) -> dict[str, dict]:
         # Build a list of (db_key, original_key) pairs
         keys = []
         for k, orig in norm.items():
-            if use_decimal:
-                keys.append((k, orig))
-                try:
-                    dec = str(int(k, 16))
-                    if dec != k:
-                        keys.append((dec, orig))
-                except ValueError:
-                    pass
-            else:
-                keys.append((k, orig))
+            for cand in get_query_addresses(use_decimal, orig):
+                keys.append((cand, orig))
 
         # Process in chunks of 500 to avoid parameter-count limits
         chunk_size = 500
@@ -333,38 +409,16 @@ def get_func(db_path: str, address: str = "", name: str = "") -> dict | None:
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     if address:
-        use_decimal = _detect_decimal(conn)
-        addr = norm_addr(address, False)
-        if use_decimal:
-            addr_dec = None
-            try:
-                addr_dec = str(int(addr, 16))
-            except ValueError:
-                pass
-            if addr_dec and addr_dec != addr:
-                cur.execute(
-                    "SELECT address, name, nodes, edges, instructions, "
-                    "cyclomatic_complexity, pseudocode, assembly, prototype, "
-                    "bytes_hash, constants, mnemonics, loops, strongly_connected, "
-                    "names, pseudocode_hash1, pseudocode_hash2 "
-                    "FROM functions WHERE address = ? OR address = ?", (addr_dec, addr)
-                )
-            else:
-                cur.execute(
-                    "SELECT address, name, nodes, edges, instructions, "
-                    "cyclomatic_complexity, pseudocode, assembly, prototype, "
-                    "bytes_hash, constants, mnemonics, loops, strongly_connected, "
-                    "names, pseudocode_hash1, pseudocode_hash2 "
-                    "FROM functions WHERE address = ?", (addr,)
-                )
-        else:
-            cur.execute(
-                "SELECT address, name, nodes, edges, instructions, "
-                "cyclomatic_complexity, pseudocode, assembly, prototype, "
-                "bytes_hash, constants, mnemonics, loops, strongly_connected, "
-                "names, pseudocode_hash1, pseudocode_hash2 "
-                "FROM functions WHERE address = ?", (addr,)
-            )
+        addrs = get_query_addresses(conn, address)
+        placeholders = ",".join("?" for _ in addrs)
+        cur.execute(
+            f"SELECT address, name, nodes, edges, instructions, "
+            f"cyclomatic_complexity, pseudocode, assembly, prototype, "
+            f"bytes_hash, constants, mnemonics, loops, strongly_connected, "
+            f"names, pseudocode_hash1, pseudocode_hash2 "
+            f"FROM functions WHERE address IN ({placeholders})",
+            addrs,
+        )
     elif name:
         cur.execute(
             "SELECT address, name, nodes, edges, instructions, "
@@ -400,40 +454,34 @@ def get_callgraph(db_path: str, func_address: str) -> dict:
     err = check_db(db_path)
     if err:
         return {"callers": [], "callees": []}
-    conn = get_connection(db_path)
-    cur = conn.cursor()
+    try:
+        conn = get_connection(db_path)
+        cur = conn.cursor()
+        use_decimal = _detect_decimal(conn)
 
-    use_decimal = _detect_decimal(conn)
-    addr = norm_addr(func_address, False)
-    if use_decimal:
-        addr_dec = None
-        try:
-            addr_dec = str(int(addr, 16))
-        except ValueError:
-            pass
-        if addr_dec and addr_dec != addr:
-            cur.execute("SELECT id FROM functions WHERE address = ? OR address = ?", (addr_dec, addr))
-        else:
-            cur.execute("SELECT id FROM functions WHERE address = ?", (addr,))
-    else:
-        cur.execute("SELECT id FROM functions WHERE address = ?", (addr,))
-    row = cur.fetchone()
-    if not row:
-        return {"callers": [], "callees": []}
-    fid = row[0]
+        addrs = get_query_addresses(conn, func_address)
+        placeholders = ",".join("?" for _ in addrs)
+        cur.execute(f"SELECT id FROM functions WHERE address IN ({placeholders})", addrs)
+        row = cur.fetchone()
+        if not row:
+            return {"callers": [], "callees": []}
+        fid = row[0]
 
-    callers = []
-    callees = []
-    cur.execute(
-        "SELECT address, type FROM callgraph WHERE func_id = ?", (fid,)
-    )
-    for addr_str, ctype in cur.fetchall():
-        norm_addr_str = norm_addr(addr_str, use_decimal)
-        if ctype == "caller":
-            callers.append(norm_addr_str)
-        else:
-            callees.append(norm_addr_str)
-    return {"callers": callers, "callees": callees}
+        callers = []
+        callees = []
+        cur.execute(
+            "SELECT address, type FROM callgraph WHERE func_id = ?", (fid,)
+        )
+        for addr_str, ctype in cur.fetchall():
+            norm_addr_str = norm_addr(addr_str, use_decimal)
+            if ctype == "caller":
+                callers.append(norm_addr_str)
+            else:
+                callees.append(norm_addr_str)
+        return {"callers": callers, "callees": callees}
+    except Exception:
+        close_connection(db_path)
+        raise
 
 
 def resolve_func_names(db_path: str, addresses: list[str]) -> dict:
@@ -447,19 +495,9 @@ def resolve_func_names(db_path: str, addresses: list[str]) -> dict:
     db_keys = []
     db_to_orig = {}
     for k, orig in norm.items():
-        if use_decimal:
-            db_keys.append(k)
-            db_to_orig[k] = orig
-            try:
-                dec = str(int(k, 16))
-                if dec != k:
-                    db_keys.append(dec)
-                    db_to_orig[dec] = orig
-            except ValueError:
-                pass
-        else:
-            db_keys.append(k)
-            db_to_orig[k] = orig
+        for cand in get_query_addresses(use_decimal, orig):
+            db_keys.append(cand)
+            db_to_orig[cand] = orig
 
     placeholders = ",".join("?" for _ in db_keys)
     cur.execute(

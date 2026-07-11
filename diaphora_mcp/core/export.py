@@ -12,15 +12,82 @@ import subprocess
 import threading
 import time
 import xmlrpc.client
+import uuid
+from pathlib import Path
 
 import requests
 import psutil
 
 from ..config import IDAT_PATH, DIAPHORA_DIR, HEADLESS_WRAPPER, DIAPHORA_SCRIPT, PYTHON
 from ..utils.sqlite import check_db, check_db_for_diff, force_delete_file
-from ..utils.connection import get_connection, get_cache_manager
+from ..utils.connection import close_connection, get_connection, get_cache_manager
 from ..utils.log import ExportLogger, OperationLogger
 from ..utils.format import dumps, err_json
+
+
+def _validate_export_output_path(idb_path: str, output_path: str) -> str | None:
+    """Проверить, что новый файл экспорта находится внутри разрешённого каталога."""
+    root = Path(os.environ.get("DIAPHORA_OUTPUT_ROOT") or Path(idb_path).parent)
+    root = Path(os.path.realpath(root))
+    target = Path(output_path)
+    target_real = Path(os.path.realpath(target))
+    try:
+        target_real.relative_to(root)
+    except ValueError:
+        return f"Output path must be inside the configured output root: {root}"
+    if target.exists() or target.is_symlink():
+        return f"Refusing to overwrite existing output path: {target}"
+    if not root.is_dir():
+        return f"Configured output root does not exist: {root}"
+    return None
+
+
+def _staged_export_path(output_path: str) -> str:
+    """Вернуть уникальный временный target в том же каталоге, что и output."""
+    target = Path(output_path)
+    return str(target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp"))
+
+
+def _publish_staged_export(staged_path: str, output_path: str) -> str | None:
+    """Эксклюзивно опубликовать staged-файл, не перезаписывая target."""
+    try:
+        os.link(staged_path, output_path)
+    except FileExistsError:
+        return f"Refusing to overwrite existing output path: {output_path}"
+    except OSError as exc:
+        return f"Failed to publish export output: {exc}"
+    try:
+        close_connection(staged_path)
+        os.remove(staged_path)
+    except OSError as exc:
+        return f"Export published but temporary file cleanup failed: {exc}"
+    return None
+
+
+def _remove_staged_export(staged_path: str) -> None:
+    try:
+        if os.path.lexists(staged_path):
+            os.remove(staged_path)
+    except OSError:
+        pass
+
+
+def _kill_and_reap(proc) -> None:
+    """Остановить IDA и дождаться закрытия процесса после timeout/cancellation."""
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except (Exception, subprocess.TimeoutExpired):
+            pass
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +200,7 @@ async def run_export(
         try:
             while proc.poll() is None:
                 if time.time() - start_time > timeout_seconds:
-                    proc.kill()
+                    _kill_and_reap(proc)
                     log.error(f"Export timed out after {timeout_seconds} s")
                     return f"Export timed out after {timeout_seconds} s"
 
@@ -166,7 +233,7 @@ async def run_export(
         finally:
             if proc.poll() is None:
                 try:
-                    proc.kill()
+                    _kill_and_reap(proc)
                     log.info("Headless export subprocess killed due to cancellation or error.")
                 except Exception:
                     pass
@@ -369,6 +436,61 @@ def _try_via_plugin(
         time.sleep(2)
 
     return "Export via ida_mcp plugin timed out after 600s."
+
+
+def _try_via_gui_listener(
+    idb_path: str,
+    output_path: str,
+    use_decompiler: bool,
+    summaries_only: bool | None,
+) -> str | None:
+    """Try to delegate the export to an already-running IDA GUI via XML-RPC listener on port 28652.
+
+    Returns:
+        * ``None`` on success (output written to *output_path*).
+        * A non-empty error string on failure.
+        * The magic value ``"NO_PLUGIN"`` when the listener is not reachable.
+    """
+    import xmlrpc.client
+    try:
+        proxy = xmlrpc.client.ServerProxy(
+            "http://127.0.0.1:28652",
+            allow_none=True,
+            use_builtin_types=True,
+        )
+        # Probe if reachable
+        try:
+            proxy.ping()
+        except Exception:
+            return "NO_PLUGIN"
+
+        # Check if version matches/supports get_idb_path
+        try:
+            open_idb = proxy.get_idb_path()
+            if os.path.normpath(open_idb).lower() != os.path.normpath(idb_path).lower():
+                # Not the right database open
+                return "NO_PLUGIN"
+        except Exception:
+            # If get_idb_path doesn't exist, we can't verify if it's the right IDB,
+            # so we skip GUI listener export to be safe.
+            return "NO_PLUGIN"
+
+        if summaries_only is None:
+            try:
+                idb_size = os.path.getsize(idb_path)
+                summaries_only = idb_size > 100 * 1024 * 1024
+            except Exception:
+                summaries_only = False
+
+        res = proxy.export_current_db(output_path, use_decompiler, summaries_only)
+        if res is True:
+            if check_db(output_path) is not None:
+                return f"GUI listener reported success but database at {output_path} is invalid."
+            return None
+        else:
+            return f"GUI listener export failed: {res}"
+    except Exception as e:
+        return f"GUI listener unexpected error: {e}"
 
 
 def _is_ida_running() -> list[tuple[int, str]]:
@@ -593,6 +715,44 @@ async def export_idb_to_diaphora(
         base = os.path.splitext(os.path.basename(idb_path))[0]
         output_path = os.path.join(os.path.dirname(idb_path), f"{base}.diaphora.sqlite")
 
+    path_error = _validate_export_output_path(idb_path, output_path)
+    if path_error:
+        return err_json(path_error)
+
+    target_output_path = output_path
+    staged_output_path = _staged_export_path(target_output_path)
+    output_path = staged_output_path
+
+    # ── 1. Try via ida_mcp plugin (HTTP) ──
+    plugin_err = _try_via_plugin(idb_path, output_path, use_decompiler, summaries_only)
+    if plugin_err is None:
+        publish_err = _publish_staged_export(output_path, target_output_path)
+        if publish_err:
+            _remove_staged_export(output_path)
+            return err_json(publish_err)
+        return dumps({"ok": True, "path": target_output_path})
+    elif plugin_err != "NO_PLUGIN":
+        _remove_staged_export(output_path)
+        result = {"error": plugin_err}
+        if log_warn:
+            result["warning"] = log_warn
+        return dumps(result)
+
+    # ── 2. Try via XML-RPC GUI listener (port 28652) ──
+    gui_err = _try_via_gui_listener(idb_path, output_path, use_decompiler, summaries_only)
+    if gui_err is None:
+        publish_err = _publish_staged_export(output_path, target_output_path)
+        if publish_err:
+            _remove_staged_export(output_path)
+            return err_json(publish_err)
+        return dumps({"ok": True, "path": target_output_path})
+    elif gui_err != "NO_PLUGIN":
+        _remove_staged_export(output_path)
+        result = {"error": gui_err}
+        if log_warn:
+            result["warning"] = log_warn
+        return dumps(result)
+
     # ── Check if database lock files are held by a running GUI instance ──
     base = os.path.splitext(idb_path)[0]
     lock_files = [base + ext for ext in [".id0", ".id1", ".id2", ".nam", ".til"]]
@@ -633,11 +793,18 @@ async def export_idb_to_diaphora(
                 pass
 
     if err:
+        _remove_staged_export(output_path)
         result = {"error": err}
         if log_warn:
             result["warning"] = log_warn
         return dumps(result)
 
+    publish_err = _publish_staged_export(output_path, target_output_path)
+    if publish_err:
+        _remove_staged_export(output_path)
+        return err_json(publish_err)
+
+    output_path = target_output_path
     result = {
         "success": True,
         "output_path": output_path,

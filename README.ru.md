@@ -40,6 +40,7 @@ pip install -e .
 |-----------|--------------|--------|
 | `IDAT_PATH` | Полный путь к idat.exe | `C:\Program Files\IDA Pro 9.3\idat.exe` |
 | `DIAPHORA_DIR` | Папка с diaphora.py | `C:\Program Files\IDA Pro 9.3\plugins\diaphora-3.4.1` |
+| `DIAPHORA_OUTPUT_ROOT` | Разрешённый корневой каталог новых файлов экспорта | `D:\\diaphora-outputs` |
 | `DIAPHORA_PYTHON` | Python для diff | `/usr/bin/python3` (по умолч. sys.executable) |
 
 В Claude Code можно задать их в `~/.claude.json` (или в настройках соответствующего MCP-клиента):
@@ -166,7 +167,7 @@ diaphora-mcp/
 └── logs/                           # Логи экспортов (создаётся автоматически)
 ```
 
-## Все MCP-инструменты (20 шт)
+## Все MCP-инструменты (21 шт)
 
 ### Export
 | Инструмент | Описание |
@@ -210,6 +211,11 @@ diaphora-mcp/
 | `get_changed_callgraph` | Сравнение входящих/исходящих вызовов |
 | `compare_call_path` | Сравнение цепочек вызовов (BFS, N уровней) |
 | `find_patch_root` | Определение корневых функций |
+
+### Performance
+| Инструмент | Описание |
+|-----------|----------|
+| `performance_report` | Агрегированный отчёт по памяти, кэшу и соединениям |
 
 ### Metadata
 | Инструмент | Описание |
