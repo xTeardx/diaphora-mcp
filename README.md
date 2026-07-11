@@ -63,6 +63,28 @@ For Claude Code, you can specify them in `~/.claude.json` (or the corresponding 
 
 > **Note:** For very large binaries (>100 MB), ensure `timeout` is at least **7200** (2 hours).
 
+### 3.1. Codex and headless IDA MCP
+
+Codex typically uses two complementary MCP servers:
+
+- `diaphora-mcp` — this project: export, Diaphora diff, and result analysis;
+- `ida-pro-mcp` — the upstream IDA inspection server for `idb_open`, decompilation, and address-level analysis.
+
+`idalib-mcp` is the headless backend of `ida-pro-mcp`, not a separate Diaphora server. After installing it, restart Codex:
+
+```powershell
+uv run ida-pro-mcp --install codex --transport streamable-http --scope global --ida-rpc http://127.0.0.1:8745/mcp
+```
+
+For this project, a stdio configuration is sufficient:
+
+```toml
+[mcp_servers.diaphora-mcp]
+command = "python"
+args = ["D:\\path\\to\\diaphora-mcp\\diaphora_mcp_server.py"]
+startup_timeout_sec = 120
+```
+
 ### 4. Preparing Databases for Diffing
 
 IDA Pro must analyze the binaries first (creating `.i64` or `.idb` files). After that:
@@ -77,6 +99,8 @@ Or run the full pipeline in one command:
 ```
 ┃ batch_export_and_diff(idb1="old.i64", idb2="new.i64")
 ```
+
+Do not pass `.i64` directly to results tools: it is an IDA database, not SQLite. Export it first.
 
 ## Quick Start
 
@@ -270,6 +294,10 @@ If you are an AI coding assistant (like Claude Code) using this protocol, keep t
 3. **Avoid Database Name Collisions**:
    - Diaphora export databases default to `<basename>.diaphora.sqlite`.
    - Never use `<basename>.sqlite` for Diaphora exports, as this conflicts with the internal cache database created by the `ida-pro-mcp` supervisor.
+
+## Verification status and limitations
+
+The checked IDA Pro 9.3 fixtures pass the regression suite: `16 passed, 1 xpassed`. A real staged export and Diaphora diff of two SQLite3 DLLs were also verified. Large or GUI-open IDBs still require a free IDA lock, a valid `DIAPHORA_OUTPUT_ROOT`, and a sufficiently large MCP client timeout.
 
 ## License
 

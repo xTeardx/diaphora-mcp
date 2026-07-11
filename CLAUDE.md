@@ -1,5 +1,7 @@
 # Diaphora MCP — Automated Binary Diffing Pipeline
 
+> Основная инструкция для агентов этого репозитория находится в [AGENTS.md](AGENTS.md). Этот файл сохранён для совместимости с Claude Code.
+
 MCP server for automating binary diffing via Diaphora + IDA Pro.
 
 ## Project Structure and Setup
@@ -12,22 +14,21 @@ MCP server for automating binary diffing via Diaphora + IDA Pro.
 | Diaphora Plugin | `<your_ida_path>\plugins\diaphora-3.4.1\` |
 | IDA (idat.exe) | `<your_ida_path>\idat.exe` |
 | IDB databases | `.i64` / `.idb` files |
-| MCP Config | `%USERPROFILE%\.claude\.mcp.json` |
-| **ida-pro-mcp patch** | `idalib/ida_mcp.py` — modified plugin for `/diaphora/export` |
+| MCP Config | Конфигурация конкретного MCP-клиента; для Codex — `%USERPROFILE%\.codex\config.toml` |
+| **ida-pro-mcp integration** | Upstream `ida-pro-mcp` + headless `idalib-mcp`; отдельный GUI listener этого проекта — `diaphora_gui_listener.py` |
 
 ## ida-pro-mcp Integration
 
-When **ida-pro-mcp** (pip package) is installed and its `ida_mcp.py` plugin is active inside IDA GUI, `export_idb_to_diaphora` delegates the export to the running IDA via HTTP **instead of spawning a second `idat64.exe`**. This eliminates the Hex-Rays license conflict entirely.
+When **ida-pro-mcp** and/or its `idalib-mcp` backend are configured, `export_idb_to_diaphora` can use the active IDA integration before falling back to the project's GUI listener and headless `idat.exe`. See [GUI_INSTRUCTIONS.md](GUI_INSTRUCTIONS.md) for the current installation flow.
 
-**How it works:**
-1. `run_export()` → `_try_via_plugin()` probes `GET /diaphora/health` on port 13337
-2. If the endpoint responds → `POST /diaphora/export` (returns `task_id` immediately)
-3. Client polls `GET /diaphora/export/<task_id>` every 2s until `done == true`
-4. Inside IDA: export runs on the main thread via `idaapi.execute_sync(…, MFF_READ)` — does **not** block the GUI
-5. `process_ui_action("Refresh")` in `finally` — prevents GUI freeze after export
-6. If the plugin is unreachable → falls through to GUI listener (port 28652) → lock check → idat64 spawn
+**Export priority:**
+1. Проверяется доступный upstream/headless IDA integration.
+2. Затем используется optional GUI listener этого проекта на порту `28652`.
+3. В конце выполняется headless экспорт через `idat.exe` с проверкой lock-файла.
 
-**Prerequisite:** Install the patched `ida_mcp.py` — see [idalib/INSTALL.md](idalib/INSTALL.md)
+Для GUI-сессий legacy listener использует порт `13337` для Diaphora HTTP endpoint только если соответствующий мост действительно установлен. Не считайте наличие фиксированного пункта меню или порта доказательством работоспособности: проверяйте MCP-инструментами и реальным экспортом.
+
+**Prerequisite:** Install the upstream integration with its installer; do not copy an old plugin manually. The repository's Diaphora server remains independently usable through `diaphora_mcp_server.py`.
 
 **Export differences vs headless idat64:**
 
@@ -144,4 +145,4 @@ If the export takes longer than expected, the AI agent can split the work:
 - **Export Timeout**: 14,400 seconds (4 hours) for idat headless; 600 seconds (10 min) for ida_mcp plugin.
 - **Diff timeout**: 1 hour (3600 seconds). Watchdog disk inactivity check triggers after 120 seconds.
 - Recursion limit is automatically set to `100000` to prevent recursion errors on large call graphs.
-- **ida_mcp patched plugin** at [idalib/ida_mcp.py](idalib/ida_mcp.py) — see [idalib/INSTALL.md](idalib/INSTALL.md) for installation.
+- Current installation instructions are in [GUI_INSTRUCTIONS.md](GUI_INSTRUCTIONS.md). Treat `AGENTS.md` as the repository source of truth for agent workflows.
