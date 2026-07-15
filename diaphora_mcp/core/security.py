@@ -6,6 +6,7 @@ Keyword-based security relevance filtering and security-patch heuristics.
 
 import json
 import os
+import re
 import sqlite3
 
 from ..models import SECURITY_KEYWORDS, SECURITY_KEYWORD_CATEGORIES
@@ -26,12 +27,24 @@ def match_security_keywords(name: str, pseudo: str, assembly: str) -> dict:
     pseudo_lower = pseudo.lower() if pseudo else ""
     assembly_lower = assembly.lower() if assembly else ""
     haystack = f"{name_lower} {pseudo_lower} {assembly_lower}"
+    tokens = re.findall(r"[a-z_][a-z0-9_]*", haystack)
+    identifiers = [part for token in tokens for part in token.split("_") if part]
 
     matched_keywords = []
     categories = set()
 
     for kw in SECURITY_KEYWORDS:
-        if kw in haystack:
+        # Match whole identifiers or intentional identifier prefixes. This
+        # avoids treating ``author`` as an ``auth`` hit while retaining useful
+        # matches such as ``authenticate`` for the ``auth`` keyword.
+        prefix_hit = any(
+            len(kw) >= 4
+            and token.startswith(kw)
+            and not (kw == "auth" and token.startswith("author"))
+            for token in tokens
+        )
+        hit = kw in identifiers or prefix_hit
+        if hit:
             matched_keywords.append(kw)
             for cat_name, cat_kws in SECURITY_KEYWORD_CATEGORIES.items():
                 if kw in cat_kws:
@@ -163,6 +176,8 @@ def analyze_diff_results(
             "address_old": row.get("addr1") or row.get("address1", ""),
             "address_new": row.get("addr2") or row.get("address2", ""),
             "security_relevant": is_security_relevant,
+            "heuristic_confidence": "low" if is_security_relevant else "none",
+            "confirmed": False,
             "security_categories": sorted(
                 set(sec_old["categories"] + sec_new["categories"])
             ) if is_security_relevant else [],
@@ -208,8 +223,11 @@ def analyze_diff_results(
                 f"Found {security_count} security-relevant match(es). "
                 "Use IDA Pro MCP tools (decompile_function, "
                 "get_function_by_address, etc.) on the addresses above "
-                "for deeper analysis."
+                "for deeper analysis. These are heuristic triage signals, "
+                "not confirmed vulnerabilities or patches."
             ),
+            "heuristic_only": True,
+            "confirmed": False,
         },
         indent=2,
         default=str,
@@ -351,6 +369,13 @@ def detect_security_patches(
                     else "medium" if "new_bounds_check" in match_indicators
                     else "low"
                 ),
+                "signal_strength": (
+                    "high" if len(match_indicators) >= 3
+                    else "medium" if len(match_indicators) >= 2
+                    else "low"
+                ),
+                "heuristic_only": True,
+                "confirmed": False,
                 "pseudo_diff_lines": len(diff_lines),
                 "complexity_change": abs(cc2 - cc1),
                 "ida_pro_mcp": {
@@ -383,6 +408,9 @@ def detect_security_patches(
         "security_patches": security_patches,
         "recommendation": (
             "Review high-severity items first. Use compare_functions or "
-            "IDA Pro MCP (decompile_function) on the addresses above."
+            "IDA Pro MCP (decompile_function) on the addresses above. "
+            "These are heuristic signals, not confirmed security patches."
         ),
+        "heuristic_only": True,
+        "confirmed": False,
     })
