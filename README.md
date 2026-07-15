@@ -90,14 +90,14 @@ startup_timeout_sec = 120
 IDA Pro must analyze the binaries first (creating `.i64` or `.idb` files). After that:
 
 ```
-┃ export_idb_to_diaphora(idb_path="old_version.i64")
-┃ export_idb_to_diaphora(idb_path="new_version.i64")
+┃ export_idb_to_diaphora(idb_path="old_version.i64", export_mode="headless")
+┃ export_idb_to_diaphora(idb_path="new_version.i64", export_mode="headless")
 ```
 
 Or run the full pipeline in one command:
 
 ```
-┃ batch_export_and_diff(idb1="old.i64", idb2="new.i64")
+┃ batch_export_and_diff(idb1="old.i64", idb2="new.i64", export_mode="headless")
 ```
 
 Do not pass `.i64` directly to results tools: it is an IDA database, not SQLite. Export it first.
@@ -249,7 +249,7 @@ diaphora-mcp/
 The project includes built-in integration with running GUI IDA Pro sessions, enabling instant exports directly from active IDA windows without database locking conflicts.
 
 1. **Auto-start**: Copy [diaphora_gui_listener.py](diaphora_gui_listener.py) to your IDA Pro `plugins/` directory. It will start a background XML-RPC server on port `28652` whenever IDA starts.
-2. **Smart Export**: When calling `export_idb_to_diaphora`, the MCP server checks port `28652`. If a session is active, it runs the export directly in the GUI. Otherwise, it automatically falls back to headless background execution via `idat.exe`.
+2. **Explicit Export Modes**: `export_mode="auto"` tries the active GUI bridges and then falls back to headless `idat.exe`; `export_mode="gui"` requires a matching active GUI session and never falls back; `export_mode="headless"` always uses `idat.exe` and is recommended for matching. `batch_export_and_diff` requires `export_mode="headless"`.
 
 For detailed instructions on configuring the bridge, see [GUI_INSTRUCTIONS.md](GUI_INSTRUCTIONS.md).
 
@@ -287,7 +287,7 @@ If you are an AI coding assistant (like Claude Code) using this protocol, keep t
 1. **GUI vs. Headless Export Schemas**:
    - Exporting via an active GUI session (`ida_mcp.py` plugin) produces a custom schema containing tables like `calls`, `strings`, `structures`, but **no `program` table**.
    - Headless export (via `idat.exe`) produces the official Diaphora schema containing the `program` table.
-   - **Crucial**: The diff engine (`diff_diaphora_dbs`) requires the official schema. **Always export headlessly if you intend to compare/diff databases**.
+   - **Crucial**: The diff engine (`diff_diaphora_dbs`) requires the official schema. GUI and headless exports are accepted by the export tool only after schema validation; **always use `export_mode="headless"` for comparison/diff**.
    
 2. **Locked Databases in GUI**:
    - A database currently open in GUI IDA Pro is locked. Attempting to export it headlessly will fail.
