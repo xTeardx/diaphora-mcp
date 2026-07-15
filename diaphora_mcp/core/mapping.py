@@ -21,7 +21,9 @@ def canonical_address(address: str, *, decimal_database: bool = False) -> str:
     if not value:
         return ""
     if decimal_database and value.isdigit():
-        return norm_addr(value, True)
+        # The database schema removes the hex/decimal ambiguity, so do not
+        # apply norm_addr's high-address heuristic here.
+        return format(int(value), "x")
     return norm_addr(value, False)
 
 

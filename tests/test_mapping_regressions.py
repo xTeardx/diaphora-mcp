@@ -101,6 +101,16 @@ def test_mapping_normalizes_decimal_database_addresses_to_hex_keys():
     assert mapping.by_old("0x401000").new_address == "501000"
 
 
+def test_mapping_normalizes_low_decimal_addresses_when_schema_is_known():
+    mapping = FunctionMapping.from_rows(
+        [{"address": "4096", "address2": "8192", "type": "best", "ratio": 1.0}],
+        source_decimal=True,
+        target_decimal=True,
+    )
+
+    assert mapping.by_old("0x1000").new_address == "2000"
+
+
 def test_mapping_reports_unmapped_old_and_new_addresses():
     mapping = FunctionMapping.from_rows(
         [
