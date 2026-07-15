@@ -43,3 +43,5 @@ uv.lock
 
 # Development scratch files (not part of the package)
 scratch/
+# Local isolated agent worktrees
+.worktrees/
