@@ -8,8 +8,8 @@
 
 - **Export**: Converts analyzed `.i64` / `.idb` databases to the Diaphora SQLite format (via `idat.exe` headless mode)
 - **Diffing**: Compares two exported databases, filters results by match type and ratio
-- **Vulnerability Analysis**: Searches for security-relevant changes using keyword matching and heuristics
-- **Patch Detection**: Automatically detects new bounds checks, null checks, error handling, and cryptographic changes
+- **Security Triage**: Screens security-relevant changes using keyword matching and heuristics; results require manual validation
+- **Patch Signals**: Highlights possible bounds checks, null checks, error handling, and cryptographic changes
 - **Ranking**: Ranks changed functions by importance based on CFG, complexity jumps, and security indicators
 - **Call Graph**: Compares call paths (BFS, up to N levels), and detects root-cause changes in call cascades
 - **Metadata Transfer**: Prepares names, comments, and prototypes for transfer between databases
@@ -264,6 +264,8 @@ When processing extremely large projects, Diaphora MCP applies specific optimiza
 
 Tools like `analyze_diff_results`, `compare_functions`, and `find_function_match` return an `ida_pro_mcp` block containing addresses and paths. This information can be passed directly to the `ida-pro-mcp` tools:
 
+For cross-version analysis, pass the `.diaphora` results file to tools that accept `match_results_path`. Diaphora's old-to-new mapping is authoritative; equal addresses are only a fallback for databases that share an address layout.
+
 ```
 ┃ # 1. Diaphora finds a suspicious function
 ┃ analyze_diff_results(results_path="diff.diaphora")
@@ -297,8 +299,8 @@ If you are an AI coding assistant (like Claude Code) using this protocol, keep t
 
 ## Verification status and limitations
 
-The checked IDA Pro 9.3 fixtures pass the regression suite: `16 passed, 1 xpassed`. A real staged export and Diaphora diff of two SQLite3 DLLs were also verified. Large or GUI-open IDBs still require a free IDA lock, a valid `DIAPHORA_OUTPUT_ROOT`, and a sufficiently large MCP client timeout.
+The reproducible unit suite runs without IDA or binary fixtures. IDA-dependent export/diff checks require a local IDA Pro and Diaphora installation. Large or GUI-open IDBs still require a free IDA lock, a valid `DIAPHORA_OUTPUT_ROOT`, and a sufficiently large MCP client timeout.
 
 ## License
 
-MIT
+This repository contains the Diaphora MCP wrapper and is licensed under the MIT License. Diaphora is an external dependency with its own AGPL-3.0 license, and IDA Pro is proprietary software. Neither dependency is bundled or redistributed here.
