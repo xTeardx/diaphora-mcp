@@ -26,6 +26,7 @@ SECURITY_KEYWORDS = [
     "validate", "sanitize", "escape", "check", "verify", "bounds",
     "overflow", "underflow", "integer_overflow", "off_by_one",
     "null_terminat", "format_string",
+    "checksum", "integrity", "tamper",
     # Process / memory
     "exec", "system", "shell", "fork", "spawn", "create_process",
     "load_library", "dlopen", "dlsym", "virtual_alloc", "virtual_protect",
@@ -65,7 +66,8 @@ SECURITY_KEYWORD_CATEGORIES: dict = {
     "network": {"socket", "connect", "bind", "listen", "accept",
                 "send", "recvfrom", "dns", "url", "uri", "http", "https"},
     "validation": {"validate", "sanitize", "escape", "check", "verify",
-                   "bounds", "overflow", "underflow"},
+                     "bounds", "overflow", "underflow"},
+    "integrity": {"checksum", "integrity", "tamper"},
     "file_io": {"fopen", "fwrite", "fread", "create_file",
                 "write_file", "delete_file", "temp", "tmp"},
     "memory_manipulation": {"virtual_alloc", "virtual_protect",

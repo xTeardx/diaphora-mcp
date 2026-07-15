@@ -13,6 +13,7 @@ import sqlite3
 from ..utils.sqlite import check_db, norm_addr, read_adaptive_table, _RESULTS_COLUMN_MAP, _detect_decimal
 from ..utils.connection import get_connection
 from ..utils.format import dumps, err_json
+from .mapping import FunctionMapping, canonical_address
 
 
 def transfer_metadata(
@@ -41,24 +42,25 @@ def transfer_metadata(
     use_dec_src = _detect_decimal(conn_src)
 
     # Build address mapping
-    addr_map = {}
+    mapping = None
     if match_results_path and os.path.isfile(match_results_path):
-        results = read_adaptive_table(
-            match_results_path,
-            _RESULTS_COLUMN_MAP,
-            "results",
-            row_factory=sqlite3.Row,
-        )
-        for row in results:
-            src = row.get("address")
-            tgt = row.get("address2")
-            if src and tgt:
-                addr_map[norm_addr(src, False)] = norm_addr(tgt, False)
+        try:
+            mapping = FunctionMapping.from_results(match_results_path)
+        except (FileNotFoundError, ValueError) as exc:
+            return err_json(f"Invalid match results: {exc}")
 
     items = []
 
     conn_src.row_factory = sqlite3.Row
     cur_src = conn_src.cursor()
+
+    def target_for(source_address):
+        if mapping:
+            match = mapping.by_old(source_address)
+            return match.new_address if match else None
+        return canonical_address(source_address, decimal_database=use_dec_src)
+
+    skipped_unmapped = 0
 
     # 1. Function names
     if transfer_names:
@@ -78,7 +80,10 @@ def transfer_metadata(
             use_true_name = False
         for row in cur_src.fetchall():
             src_addr = norm_addr(row["address"], use_dec_src)
-            tgt_addr = addr_map.get(src_addr, src_addr)
+            tgt_addr = target_for(row["address"])
+            if not tgt_addr:
+                skipped_unmapped += 1
+                continue
             new_name = (row["true_name"] if use_true_name else None) or row["name"]
             items.append({
                 "type": "function_name",
@@ -95,7 +100,10 @@ def transfer_metadata(
         )
         for row in cur_src.fetchall():
             src_addr = norm_addr(row["address"], use_dec_src)
-            tgt_addr = addr_map.get(src_addr, src_addr)
+            tgt_addr = target_for(row["address"])
+            if not tgt_addr:
+                skipped_unmapped += 1
+                continue
             items.append({
                 "type": "comment",
                 "source_address": row["address"],
@@ -112,7 +120,10 @@ def transfer_metadata(
         )
         for row in cur_src.fetchall():
             src_addr = norm_addr(row["address"], use_dec_src)
-            tgt_addr = addr_map.get(src_addr, src_addr)
+            tgt_addr = target_for(row["address"])
+            if not tgt_addr:
+                skipped_unmapped += 1
+                continue
             items.append({
                 "type": "prototype",
                 "source_address": row["address"],
@@ -150,6 +161,7 @@ def transfer_metadata(
         },
         "items": items[:200],
         "truncated": len(items) > 200,
+        "unmapped_skipped": skipped_unmapped,
         "instruction": (
             "Use the items above with IDA Pro MCP tools, or generate an IDAPython script "
             "to apply them in bulk."

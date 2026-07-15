@@ -29,19 +29,46 @@ from diaphora_mcp.utils.sqlite import check_db_for_diff, get_callgraph
     ],
 )
 def test_results_tools_reject_non_sqlite_input_as_json_error(
-    module_name, function_name
+    module_name, function_name, tmp_path
 ):
     """Results tools must not leak sqlite.DatabaseError for an IDA .i64 file."""
     import importlib
 
     module = importlib.import_module(module_name)
     function = getattr(module, function_name)
-    input_path = Path(__file__).parents[1] / "Fixes" / "Tests" / "sqlite3_aimp.dll.i64"
+    input_path = tmp_path / "not-a-sqlite.i64"
+    input_path.write_bytes(b"IDA database placeholder")
 
     result = json.loads(function(str(input_path)))
 
     assert "error" in result
     assert "database" in result["error"].lower()
+
+
+def test_read_results_reports_total_before_display_limit(tmp_path):
+    path = tmp_path / "results.diaphora"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE config (main_db TEXT, diff_db TEXT);
+        CREATE TABLE results (address TEXT, name TEXT, address2 TEXT,
+            name2 TEXT, ratio REAL, type TEXT);
+        CREATE TABLE unmatched (address TEXT, name TEXT, type TEXT);
+        INSERT INTO results VALUES ('401000', 'a', '501000', 'a', 1.0, 'best');
+        INSERT INTO results VALUES ('401010', 'b', '501010', 'b', 0.9, 'partial');
+        INSERT INTO results VALUES ('401020', 'c', '501020', 'c', 0.8, 'partial');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    from diaphora_mcp.core.diff import read_results
+
+    report = read_results(str(path), limit=1)
+
+    assert report["total_matches"] == 3
+    assert len(report["results"]) == 1
+    assert report["truncated"] is True
 
 
 @pytest.fixture(autouse=True)
@@ -173,6 +200,115 @@ def test_export_rejects_target_symlink_created_after_validation(tmp_path, monkey
     assert "error" in result
     assert "overwrite" in result["error"].lower()
     assert not escaped.exists()
+
+
+@pytest.mark.parametrize("mode", ["auto", "headless"])
+def test_export_mode_accepts_supported_values(tmp_path, monkeypatch, mode):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    idb = root / "sample.i64"
+    idb.write_bytes(b"idb")
+    target = root / f"{mode}.sqlite"
+
+    async def fake_run_export(_idb, output, _decompiler, _summaries):
+        Path(output).write_bytes(b"export")
+        return None
+
+    monkeypatch.setattr(export_module, "run_export", fake_run_export)
+    monkeypatch.setattr(export_module, "check_db", lambda _path: None)
+    monkeypatch.setattr(export_module, "check_db_for_diff", lambda _path: None)
+    monkeypatch.setattr(export_module, "_try_via_plugin", lambda *args: "NO_PLUGIN")
+    monkeypatch.setattr(export_module, "_try_via_gui_listener", lambda *args: "NO_PLUGIN")
+    monkeypatch.setenv("DIAPHORA_OUTPUT_ROOT", str(root))
+
+    result = json.loads(asyncio.run(
+        export_module.export_idb_to_diaphora(str(idb), str(target), export_mode=mode)
+    ))
+
+    assert result["ok"] is True
+    assert result["backend"] == "headless"
+    assert result["schema"] == "official_diaphora"
+
+
+def test_headless_mode_never_probes_gui(tmp_path, monkeypatch):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    idb = root / "sample.i64"
+    idb.write_bytes(b"idb")
+    target = root / "result.sqlite"
+    calls = []
+
+    async def fake_run_export(_idb, output, _decompiler, _summaries):
+        calls.append("headless")
+        Path(output).write_bytes(b"export")
+        return None
+
+    def forbidden(*_args):
+        calls.append("gui")
+        raise AssertionError("GUI backend must not be probed in headless mode")
+
+    monkeypatch.setattr(export_module, "run_export", fake_run_export)
+    monkeypatch.setattr(export_module, "check_db", lambda _path: None)
+    monkeypatch.setattr(export_module, "check_db_for_diff", lambda _path: None)
+    monkeypatch.setattr(export_module, "_try_via_plugin", forbidden)
+    monkeypatch.setattr(export_module, "_try_via_gui_listener", forbidden)
+    monkeypatch.setenv("DIAPHORA_OUTPUT_ROOT", str(root))
+
+    result = json.loads(asyncio.run(
+        export_module.export_idb_to_diaphora(str(idb), str(target), export_mode="headless")
+    ))
+
+    assert result["backend"] == "headless"
+    assert calls == ["headless"]
+
+
+def test_gui_mode_requires_diffable_schema_and_does_not_fallback(tmp_path, monkeypatch):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    idb = root / "sample.i64"
+    idb.write_bytes(b"idb")
+    target = root / "result.sqlite"
+    calls = []
+
+    def fake_gui(_idb, output, _decompiler, _summaries):
+        calls.append("gui")
+        Path(output).write_bytes(b"gui-export")
+        return None
+
+    async def forbidden_headless(*_args):
+        calls.append("headless")
+        raise AssertionError("GUI mode must not fall back to headless")
+
+    monkeypatch.setattr(export_module, "_try_via_plugin", fake_gui)
+    monkeypatch.setattr(export_module, "run_export", forbidden_headless)
+    monkeypatch.setattr(export_module, "check_db", lambda _path: None)
+    monkeypatch.setattr(export_module, "check_db_for_diff", lambda _path: "program table missing")
+    monkeypatch.setenv("DIAPHORA_OUTPUT_ROOT", str(root))
+
+    result = json.loads(asyncio.run(
+        export_module.export_idb_to_diaphora(str(idb), str(target), export_mode="gui")
+    ))
+
+    assert "error" in result
+    assert "schema" in result["error"].lower()
+    assert calls == ["gui"]
+    assert not target.exists()
+
+
+def test_batch_rejects_non_headless_mode(tmp_path):
+    first = tmp_path / "first.i64"
+    second = tmp_path / "second.i64"
+    first.write_bytes(b"idb")
+    second.write_bytes(b"idb")
+
+    result = json.loads(asyncio.run(
+        export_module.batch_export_and_diff(
+            str(first), str(second), output_dir=str(tmp_path / "out"), export_mode="gui"
+        )
+    ))
+
+    assert "error" in result
+    assert "headless" in result["error"].lower()
 
 
 def load_gui_listener(monkeypatch, idb_path: Path):

@@ -113,7 +113,6 @@ def read_results(
             except (TypeError, ValueError):
                 return 0.0
         raw_results.sort(key=_ratio_key, reverse=True)
-        raw_results = raw_results[:effective_limit]
     else:
         raw_results = read_adaptive_table(
             results_path, _RESULTS_COLUMN_MAP, "results",
@@ -129,7 +128,6 @@ def read_results(
             except (TypeError, ValueError):
                 return 0.0
         raw_results.sort(key=_ratio_key, reverse=True)
-        raw_results = raw_results[:effective_limit]
 
     # Counts via GROUP BY (always works regardless of column names)
     counts = {"best": 0, "partial": 0, "unreliable": 0, "multimatch": 0}
@@ -148,16 +146,17 @@ def read_results(
         row_factory=sqlite3.Row,
     )
 
-    res_slice = raw_results[:limit] if (limit is not None and limit > 0) else raw_results
+    total_match_count = len(raw_results)
+    res_slice = raw_results[:effective_limit]
     unm_slice = unmatched[:unmatched_limit] if (unmatched_limit is not None and unmatched_limit > 0) else unmatched
 
     return {
         "config": config_info,
         "counts": counts,
-        "total_matches": len(raw_results),
+        "total_matches": total_match_count,
         "unmatched_count": len(unmatched),
         "results": res_slice,
-        "truncated": len(raw_results) > len(res_slice),
+        "truncated": total_match_count > len(res_slice),
         "unmatched": unm_slice,
         "unmatched_truncated": len(unmatched) > len(unm_slice),
     }

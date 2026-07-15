@@ -12,6 +12,7 @@ from ..utils.sqlite import check_db, check_results_db, get_func, get_callgraph, 
 from ..utils.connection import get_connection, get_cache_manager
 from ..utils.format import dumps, err_json
 from .repository import IndexedDatabase, CallGraphEngine
+from .mapping import FunctionMapping, canonical_address
 
 
 def build_call_path(db_path: str, start_addr: str, depth: int,
@@ -55,6 +56,7 @@ def get_changed_callgraph(
     db2_path: str,
     address: str = "",
     name: str = "",
+    match_results_path: str = "",
 ) -> str:
     """Compare the callers and callees of a function across two databases."""
     err1 = check_db(db1_path)
@@ -74,7 +76,15 @@ def get_changed_callgraph(
         address = f1["address"]
 
     func1 = get_func(db1_path, address=address)
-    func2 = get_func(db2_path, address=address)
+    address2 = ""
+    if match_results_path:
+        try:
+            mapped = FunctionMapping.from_results(match_results_path).by_old(address)
+            if mapped:
+                address2 = mapped.new_address
+        except (FileNotFoundError, ValueError):
+            pass
+    func2 = get_func(db2_path, address=address2 or address)
 
     if not func1 and not func2:
         return err_json(f"Function at 0x{address} not found in either database")
@@ -83,7 +93,7 @@ def get_changed_callgraph(
     name2 = func2["name"] if func2 else "(not in db2)"
 
     cg1 = get_callgraph(db1_path, address) if func1 else {"callers": [], "callees": []}
-    cg2 = get_callgraph(db2_path, address) if func2 else {"callers": [], "callees": []}
+    cg2 = get_callgraph(db2_path, address2 or address) if func2 else {"callers": [], "callees": []}
 
     set_c1 = set(cg1["callers"])
     set_c2 = set(cg2["callers"])
@@ -112,6 +122,8 @@ def get_changed_callgraph(
         "function_name_old": name1,
         "function_name_new": name2,
         "address": address,
+        "address_old": func1.get("address", "") if func1 else "",
+        "address_new": func2.get("address", "") if func2 else "",
         "callers": {
             "total_old": len(set_c1),
             "total_new": len(set_c2),
@@ -140,6 +152,7 @@ def compare_call_path(
     name: str = "",
     depth: int = 2,
     direction: str = "callees",
+    match_results_path: str = "",
 ) -> str:
     """Walk the callgraph from a starting function and compare the call trees
     between old and new binaries."""
@@ -160,19 +173,42 @@ def compare_call_path(
         address = f1["address"]
 
     depth = min(depth, 5)
-    path1 = build_call_path(db1_path, address, depth, direction)
-    path2 = build_call_path(db2_path, address, depth, direction)
+    mapping = None
+    address2 = address
+    if match_results_path:
+        try:
+            mapping = FunctionMapping.from_results(match_results_path)
+            mapped_start = mapping.by_old(address)
+            if mapped_start:
+                address2 = mapped_start.new_address
+        except (FileNotFoundError, ValueError):
+            pass
 
-    def _flatten(path):
+    path1 = build_call_path(db1_path, address, depth, direction)
+    path2 = build_call_path(db2_path, address2, depth, direction)
+
+    def _flatten(path, translate_old=False):
+        if translate_old and mapping:
+            return {
+                (mapping.by_old(e["address"]).new_address
+                 if mapping.by_old(e["address"]) else e["address"], e["level"])
+                for e in path
+            }
         return {(e["address"], l) for e in path for l in [e["level"]]}
 
-    set1 = _flatten(path1)
+    set1 = _flatten(path1, translate_old=True)
     set2 = _flatten(path2)
     added = [e for e in path2 if (e["address"], e["level"]) not in set1]
-    removed = [e for e in path1 if (e["address"], e["level"]) not in set2]
+    removed = [
+        e for e in path1
+        if ((mapping.by_old(e["address"]).new_address
+             if mapping and mapping.by_old(e["address"])
+             else e["address"]), e["level"]) not in set2
+    ]
 
     return dumps({
         "function_address": address,
+        "function_address_new": address2,
         "direction": direction,
         "depth": depth,
         "total_nodes_old": len(set1),
@@ -208,6 +244,11 @@ def find_patch_root(
 
     db1_path, db2_path = get_underlying_db_paths(results_path)
 
+    try:
+        mapping = FunctionMapping.from_results(results_path)
+    except (FileNotFoundError, ValueError):
+        mapping = None
+
     results_data = read_adaptive_table(
         results_path, _RESULTS_COLUMN_MAP, "results",
         row_factory=sqlite3.Row,
@@ -229,7 +270,10 @@ def find_patch_root(
     for r in results_data:
         a2 = r.get("address2", "")
         if a2:
-            a2n = norm_addr(a2)
+            a2n = canonical_address(
+                a2,
+                decimal_database=mapping.target_decimal if mapping else False,
+            )
             changed_addrs.add(a2n)
             if a2n not in addr_to_result:
                 addr_to_result[a2n] = r
@@ -239,7 +283,12 @@ def find_patch_root(
         if u.get("type") == "secondary":
             addr = u.get("address", "")
             if addr:
-                changed_addrs.add(norm_addr(addr))
+                changed_addrs.add(
+                    canonical_address(
+                        addr,
+                        decimal_database=mapping.target_decimal if mapping else False,
+                    )
+                )
 
     candidates = []
     try:

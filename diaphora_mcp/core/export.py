@@ -25,6 +25,24 @@ from ..utils.log import ExportLogger, OperationLogger
 from ..utils.format import dumps, err_json
 
 
+_EXPORT_MODES = {"auto", "headless", "gui"}
+
+
+def _normalize_export_mode(export_mode: str) -> str | None:
+    mode = str(export_mode or "auto").strip().lower()
+    return mode if mode in _EXPORT_MODES else None
+
+
+def _schema_for_export(path: str) -> tuple[str | None, str | None]:
+    basic_error = check_db(path)
+    if basic_error:
+        return None, basic_error
+    diff_error = check_db_for_diff(path)
+    if diff_error is None:
+        return "official_diaphora", None
+    return "basic_diaphora", diff_error
+
+
 def _validate_export_output_path(idb_path: str, output_path: str) -> str | None:
     """Проверить, что новый файл экспорта находится внутри разрешённого каталога."""
     root = Path(os.environ.get("DIAPHORA_OUTPUT_ROOT") or Path(idb_path).parent)
@@ -691,6 +709,7 @@ async def export_idb_to_diaphora(
     output_path: str | None = None,
     use_decompiler: bool = False,
     summaries_only: bool | None = None,
+    export_mode: str = "auto",
 ) -> str:
     """Export an IDB/i64 database to Diaphora SQLite format using IDA headless.
 
@@ -699,6 +718,11 @@ async def export_idb_to_diaphora(
     minutes for large binaries. Default is False for fast export; re-export
     with decompiler only if pseudocode analysis is needed.
     """
+    mode = _normalize_export_mode(export_mode)
+    if mode is None:
+        return err_json(
+            f"Unsupported export_mode {export_mode!r}; use one of: auto, headless, gui"
+        )
     if not os.path.isfile(idb_path):
         return err_json(f"IDB file not found: {idb_path}")
 
@@ -724,31 +748,54 @@ async def export_idb_to_diaphora(
     output_path = staged_output_path
 
     # ── 1. Try via ida_mcp plugin (HTTP) ──
-    plugin_err = _try_via_plugin(idb_path, output_path, use_decompiler, summaries_only)
-    if plugin_err is None:
-        publish_err = _publish_staged_export(output_path, target_output_path)
-        if publish_err:
+    backend = None
+    if mode in {"auto", "gui"}:
+        plugin_err = _try_via_plugin(idb_path, output_path, use_decompiler, summaries_only)
+        if plugin_err is None:
+            backend = "ida_mcp"
+        elif plugin_err != "NO_PLUGIN":
             _remove_staged_export(output_path)
-            return err_json(publish_err)
-        return dumps({"ok": True, "path": target_output_path})
-    elif plugin_err != "NO_PLUGIN":
-        _remove_staged_export(output_path)
-        result = {"error": plugin_err}
-        if log_warn:
-            result["warning"] = log_warn
-        return dumps(result)
+            result = {"error": plugin_err}
+            if log_warn:
+                result["warning"] = log_warn
+            return dumps(result)
 
     # ── 2. Try via XML-RPC GUI listener (port 28652) ──
-    gui_err = _try_via_gui_listener(idb_path, output_path, use_decompiler, summaries_only)
-    if gui_err is None:
+    if backend is None and mode in {"auto", "gui"}:
+        gui_err = _try_via_gui_listener(idb_path, output_path, use_decompiler, summaries_only)
+        if gui_err is None:
+            backend = "gui_listener"
+        elif gui_err != "NO_PLUGIN":
+            _remove_staged_export(output_path)
+            result = {"error": gui_err}
+            if log_warn:
+                result["warning"] = log_warn
+            return dumps(result)
+
+    if backend is None and mode == "gui":
+        _remove_staged_export(output_path)
+        return err_json(
+            "GUI export requested, but no matching ida_mcp or GUI listener session is available"
+        )
+
+    if backend is not None:
+        if os.path.lexists(target_output_path):
+            _remove_staged_export(output_path)
+            return err_json(
+                f"Refusing to overwrite existing output path: {target_output_path}"
+            )
+        schema, schema_error = _schema_for_export(output_path)
+        if schema != "official_diaphora":
+            _remove_staged_export(output_path)
+            return err_json(
+                "GUI export produced a database with an invalid schema for Diaphora matching: "
+                f"{schema_error or 'official diff schema is missing'}"
+            )
         publish_err = _publish_staged_export(output_path, target_output_path)
         if publish_err:
             _remove_staged_export(output_path)
             return err_json(publish_err)
-        return dumps({"ok": True, "path": target_output_path})
-    elif gui_err != "NO_PLUGIN":
-        _remove_staged_export(output_path)
-        result = {"error": gui_err}
+        result = {"ok": True, "path": target_output_path, "backend": backend, "schema": schema}
         if log_warn:
             result["warning"] = log_warn
         return dumps(result)
@@ -799,6 +846,17 @@ async def export_idb_to_diaphora(
             result["warning"] = log_warn
         return dumps(result)
 
+    schema, schema_error = _schema_for_export(output_path)
+    if schema != "official_diaphora":
+        _remove_staged_export(output_path)
+        result = {
+            "error": "Headless export produced a database that is not usable for Diaphora matching: "
+            f"{schema_error or 'official diff schema is missing'}"
+        }
+        if log_warn:
+            result["warning"] = log_warn
+        return dumps(result)
+
     publish_err = _publish_staged_export(output_path, target_output_path)
     if publish_err:
         _remove_staged_export(output_path)
@@ -807,10 +865,13 @@ async def export_idb_to_diaphora(
     output_path = target_output_path
     result = {
         "success": True,
+        "ok": True,
         "output_path": output_path,
         "size_bytes": os.path.getsize(output_path),
         "exported_from": os.path.basename(idb_path),
         "decompiler_used": use_decompiler,
+        "backend": "headless",
+        "schema": schema,
     }
     if log_warn:
         result["warning"] = log_warn
@@ -843,6 +904,7 @@ async def batch_export_and_diff(
     cleanup: bool = False,
     limit: int = 500,
     unmatched_limit: int = 100,
+    export_mode: str = "headless",
 ) -> str:
     """Run the full Diaphora pipeline: export → export → diff → summary.
 
@@ -860,6 +922,13 @@ async def batch_export_and_diff(
     require them to do per-function analysis. Set cleanup=True only if you
     are sure you won't need any per-function drill-down after this call.
     """
+    mode = _normalize_export_mode(export_mode)
+    if mode != "headless":
+        return err_json(
+            "batch_export_and_diff requires export_mode='headless' because matching needs "
+            "the complete official Diaphora schema"
+        )
+
     b1 = os.path.splitext(os.path.basename(idb1_path))[0]
     b2 = os.path.splitext(os.path.basename(idb2_path))[0]
 

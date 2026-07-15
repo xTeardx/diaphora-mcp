@@ -1,0 +1,17 @@
+name: Bug report
+description: Report a reproducible defect
+body:
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include the tool call, sanitized inputs, and observed output.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Include Python, IDA, and Diaphora versions where relevant.
+    validations:
+      required: true

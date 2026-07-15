@@ -1,58 +1,73 @@
-# Diaphora MCP — правила для агентов
+# Diaphora MCP — agent instructions
 
-## Назначение
+## Mission
 
-Проект предоставляет MCP-сервер для экспорта IDA-баз, сравнения Diaphora SQLite-баз и анализа diff-результатов.
+This repository provides a local stdio MCP server for exporting IDA databases, comparing Diaphora SQLite exports, and analyzing diff results.
 
-## Компоненты
+## Source map
 
-- `diaphora_mcp_server.py` — stdio entrypoint сервера `diaphora-mcp`.
-- `diaphora_mcp/` — регистрация MCP tools и основная логика.
-- `diaphora_gui_listener.py` — необязательный XML-RPC мост для уже открытой GUI-сессии IDA.
-- `_diaphora_headless.py` — wrapper для `idat.exe`.
-- `ida-pro-mcp`/`idalib-mcp` — отдельный upstream-сервер для headless IDA inspection; он не заменяет Diaphora diff server.
+- `diaphora_mcp_server.py`: top-level stdio entry point.
+- `diaphora_mcp/`: MCP registration and implementation.
+- `diaphora_mcp/core/export.py`: export modes and batch pipeline.
+- `diaphora_mcp/core/diff.py`: result reading and summaries.
+- `diaphora_mcp/core/analysis.py`: matching and function comparison.
+- `diaphora_mcp/core/graph.py`: mapped call-graph analysis.
+- `_diaphora_headless.py`: IDA headless wrapper.
+- `diaphora_gui_listener.py`: optional legacy GUI bridge.
+- `tests/`: tracked synthetic regression tests.
+- `docs/`: user-facing and maintenance documentation.
 
-## Поддерживаемый workflow
+## Data contract
 
-1. Получить `.i64`/`.idb` из IDA.
-2. Вызвать `export_idb_to_diaphora` или `batch_export_and_diff` с `summaries_only=True` и `use_decompiler=False` для больших баз.
-3. Передать только созданные `.diaphora.sqlite` и `.diaphora` в DB/results tools.
-4. Для низкоуровневой проверки адресов использовать `ida-pro-mcp`/`idalib-mcp`.
+1. `.i64`/`.idb` is an IDA database, not SQLite.
+2. Results tools accept only generated `.diaphora.sqlite` and `.diaphora` files.
+3. For comparisons, old input is primary and new input is secondary.
+4. When image bases differ, use `match_results_path` to map old addresses to new addresses.
+5. `batch_export_and_diff` must use `export_mode="headless"`.
 
-`.i64` — это IDA database, а не SQLite. Не передавай `.i64` напрямую в `get_diff_summary`, `rank_changes`, `summarize_patch` и другие results tools.
+## Export rules
 
-## Окружение
+- `headless`: deterministic `idat.exe` export with official diff-schema validation.
+- `auto`: active GUI bridge first, then headless fallback.
+- `gui`: active GUI bridge only; it must not silently fall back.
+- Never overwrite an existing generated target.
+- Keep output below `DIAPHORA_OUTPUT_ROOT`.
+- Do not pass user IDBs or generated SQLite files into Git.
 
-Минимальные переменные:
+## Change protocol
 
-```text
-IDAT_PATH=D:\Programs\IDA Professional 9.3\idat.exe
-DIAPHORA_DIR=D:\Programs\IDA Professional 9.3\plugins\diaphora-3.4.1
-DIAPHORA_OUTPUT_ROOT=D:\diaphora-outputs
-```
+Before a non-trivial change:
 
-`DIAPHORA_OUTPUT_ROOT` ограничивает новые export targets. Уже открытый IDB нельзя одновременно экспортировать вторым `idat.exe`: сначала освободи lock или используй уже активный GUI/idalib backend.
+1. Inspect `git status --short`, current branch, and relevant tests.
+2. Write a focused plan identifying files, failure mode, and verification.
+3. For behavior changes, write a regression test first and reproduce the failure.
+4. Make the smallest compatible patch.
+5. Run the full suite, compilation check, and `git diff --check`.
 
-## Проверки перед изменениями
+Do not use `git reset --hard`, `git clean -fd`, force-push, or broad deletion of fixtures.
+
+## Required checks
 
 ```powershell
-git status --short
-git branch --show-current
-git rev-parse HEAD
 python -m pytest -q
 python -m compileall -q .
-python -m pip check
+git diff --check
 ```
 
-Для production fix сначала добавь regression test, воспроизведи failure, внеси минимальный patch и повтори полный suite. Не используй `git reset --hard`, `git clean -fd`, force-push и не удаляй пользовательские IDA fixtures.
+`pip check` may report unrelated packages installed in the host environment; compare the diagnostic with the project dependency set before treating it as a project failure.
 
-## Git и локальные артефакты
+## Technical limitations to preserve
 
-- `Fixes/` — локальные бинарные fixtures, не публикуются.
-- `audit_artifacts/`, `logs/`, `dist/`, `build/`, `uv.lock` — локальные/generated artifacts.
-- Проектные тесты в `tests/` отслеживаются Git.
-- Перед commit проверь `git diff --check` и отсутствие случайных бинарников.
+- Matching and security analysis are heuristic and require manual validation.
+- IDA locks, process state, decompiler availability, and database quality affect exports.
+- Large inputs can take a long time; preserve timeout and cancellation behavior.
+- Do not claim GUI output is diffable without checking the official schema.
+- Do not modify the upstream `ida_mcp.py`; it is a separate IDA inspection integration.
 
-## Ограничения
+## Review checklist
 
-Статические проверки могут показывать существующие diagnostics для IDA-модулей, XML-RPC и adaptive SQL. Это не следует автоматически считать новым production bug: сначала сравни с baseline и добавь воспроизводимый тест.
+- Does the change preserve old/new address mapping?
+- Does it distinguish an IDA DB from a Diaphora SQLite/results file?
+- Does it avoid leaking raw subprocess exceptions or sensitive paths unnecessarily?
+- Does it add a regression test for a fixed bug?
+- Are docs/examples consistent with current MCP function signatures?
