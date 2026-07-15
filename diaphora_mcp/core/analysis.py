@@ -11,6 +11,7 @@ import sqlite3
 from ..utils.sqlite import check_db, get_func, get_funcs_batch, get_callgraph, resolve_func_names, norm_addr, _detect_decimal, get_query_addresses
 from ..utils.connection import get_connection
 from ..utils.format import pseudocode_simple_diff, func_features, dumps, err_json
+from .mapping import FunctionMapping
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +187,7 @@ def compare_functions(
     name: str = "",
     address2: str = "",
     name2: str = "",
+    match_results_path: str = "",
 ) -> str:
     """Retrieve a function's data from both databases for side-by-side comparison."""
     err1 = check_db(db1_path)
@@ -228,6 +230,16 @@ def compare_functions(
     func1 = _lookup(db1_path, address, name)
     if not func1:
         return err_json(f"Function not found in primary database (address={address}, name={name})")
+
+    if match_results_path and not address2 and not name2:
+        try:
+            mapping = FunctionMapping.from_results(match_results_path)
+            mapped = mapping.by_old(address)
+            if mapped:
+                address2 = mapped.new_address
+                name2 = mapped.new_name
+        except (FileNotFoundError, ValueError):
+            pass
 
     func2 = _lookup(db2_path, address2 or address, name2 or name)
     if not func2:
