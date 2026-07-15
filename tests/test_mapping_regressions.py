@@ -4,6 +4,7 @@ import json
 from diaphora_mcp.core.mapping import FunctionMapping
 from diaphora_mcp.core.analysis import compare_functions
 from diaphora_mcp.core.graph import get_changed_callgraph
+from diaphora_mcp.core.metadata import transfer_metadata
 
 
 def _make_function_db(path, address, child_address):
@@ -36,7 +37,7 @@ def _make_function_db(path, address, child_address):
     conn.close()
 
 
-def _make_results(path, old_db, new_db):
+def _make_results(path, old_db, new_db, rows=None):
     conn = sqlite3.connect(path)
     conn.executescript(
         """
@@ -47,12 +48,13 @@ def _make_results(path, old_db, new_db):
         """
     )
     conn.execute("INSERT INTO config VALUES (?, ?)", (str(old_db), str(new_db)))
-    conn.execute(
-        "INSERT INTO results VALUES ('401000', 'root', '501000', 'root', 1.0, 'best')"
-    )
-    conn.execute(
-        "INSERT INTO results VALUES ('401010', 'child', '501010', 'child', 1.0, 'best')"
-    )
+    for row in rows or [
+        ("401000", "root", "501000", "root"),
+        ("401010", "child", "501010", "child"),
+    ]:
+        conn.execute(
+            "INSERT INTO results VALUES (?, ?, ?, ?, 1.0, 'best')", row
+        )
     conn.commit()
     conn.close()
 
@@ -179,3 +181,34 @@ def test_compare_call_path_translates_old_nodes_before_comparison(tmp_path):
     assert report["function_address_new"] == "501000"
     assert report["added_nodes"] == 0
     assert report["removed_nodes"] == 0
+
+
+def test_metadata_transfer_maps_decimal_source_to_rebased_decimal_target(tmp_path):
+    old_db = tmp_path / "old.sqlite"
+    new_db = tmp_path / "new.sqlite"
+    results = tmp_path / "diff.diaphora"
+    _make_function_db(old_db, "4198400", "4198416")
+    _make_function_db(new_db, "5246976", "5246992")
+    _make_results(
+        results,
+        old_db,
+        new_db,
+        rows=[
+            ("4198400", "root", "5246976", "root"),
+            ("4198416", "child", "5246992", "child"),
+        ],
+    )
+
+    report = json.loads(
+        transfer_metadata(
+            str(old_db),
+            str(new_db),
+            transfer_comments=False,
+            transfer_prototypes=False,
+            transfer_types=False,
+            match_results_path=str(results),
+        )
+    )
+
+    root_item = next(i for i in report["items"] if i["source_address"] == "4198400")
+    assert root_item["target_address"] == "501000"

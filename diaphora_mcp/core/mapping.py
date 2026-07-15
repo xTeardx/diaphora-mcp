@@ -124,10 +124,14 @@ class FunctionMapping:
             unmatched_secondary=secondary,
         )
 
-    def by_old(self, address: str, *, decimal_database: bool = False):
+    def by_old(self, address: str, *, decimal_database=None):
+        if decimal_database is None:
+            decimal_database = self.source_decimal
         return self._by_old.get(canonical_address(address, decimal_database=decimal_database))
 
-    def by_new(self, address: str, *, decimal_database: bool = False):
+    def by_new(self, address: str, *, decimal_database=None):
+        if decimal_database is None:
+            decimal_database = self.target_decimal
         return self._by_new.get(canonical_address(address, decimal_database=decimal_database))
 
     def is_removed(self, address: str, *, decimal_database: bool = False) -> bool:
