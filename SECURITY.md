@@ -17,8 +17,6 @@ supported.
 
 ## Technical security boundaries
 
-- Treat IDBs, binaries, exports, logs, and MCP responses as sensitive analysis
-  data.
 - Keep `DIAPHORA_OUTPUT_ROOT` dedicated to generated results.
 - Review tool arguments before allowing an agent to read or write a new path.
 - Do not treat heuristic security output as a vulnerability verdict.
