@@ -84,7 +84,7 @@ Steps:
 
 Steps:
 1. Add CI and documentation files with pinned, minimal tooling.
-2. Document IDA/Diaphora external dependencies and licensing boundaries.
+2. Document IDA/Diaphora external dependencies and technical boundaries.
 3. Validate YAML, package metadata, and clean-clone test behavior.
 
 ### Task 7: Final verification

@@ -6,7 +6,7 @@ Present Diaphora MCP as a maintainable, agent-friendly open-source MCP server wi
 
 ## Research-informed structure
 
-The repository will follow patterns common in mature MCP servers: a short README quick start, explicit client configuration, grouped tool documentation, examples, contributor guidance, security notes, CI, and repository-level agent instructions. The documentation will describe the actual stdio server and licensed local IDA/Diaphora requirements rather than promise a hosted or containerized deployment.
+The repository will follow patterns common in mature MCP servers: a short README quick start, explicit client configuration, grouped tool documentation, examples, contributor guidance, security notes, CI, and repository-level agent instructions. The documentation will describe the actual stdio server and local IDA/Diaphora requirements rather than promise a hosted or containerized deployment.
 
 ## Scope
 
@@ -20,9 +20,9 @@ The repository will follow patterns common in mature MCP servers: a short README
 
 ## Non-goals
 
-- No Docker image: IDA Pro and Diaphora are local, licensed dependencies.
+- No Docker image: IDA Pro and Diaphora require a local desktop environment.
 - No automatic publishing to PyPI or an MCP registry.
-- No inclusion of IDB, SQLite, binary, or proprietary Diaphora fixtures.
+- No inclusion of IDB, SQLite, or binary fixtures.
 
 ## Acceptance criteria
 

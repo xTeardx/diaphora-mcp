@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "diaphora": {
+      "command": "python",
+      "args": ["/absolute/path/to/diaphora-mcp/diaphora_mcp_server.py"],
+      "env": {
+        "IDAT_PATH": "/absolute/path/to/idat64",
+        "DIAPHORA_DIR": "/absolute/path/to/diaphora",
+        "DIAPHORA_OUTPUT_ROOT": "/absolute/path/to/diaphora-outputs"
+      }
+    }
+  }
+}

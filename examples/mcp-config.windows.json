@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "diaphora": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "python",
+        "C:/src/diaphora-mcp/diaphora_mcp_server.py"
+      ],
+      "env": {
+        "IDAT_PATH": "C:/Program Files/IDA Professional 9.3/idat.exe",
+        "DIAPHORA_DIR": "C:/Program Files/IDA Professional 9.3/plugins/diaphora",
+        "DIAPHORA_OUTPUT_ROOT": "C:/diaphora-outputs"
+      }
+    }
+  }
+}

@@ -1,14 +1,25 @@
 ## Summary
 
-<!-- What behavior does this change? -->
+<!-- What changed and why? -->
 
-## Validation
+## Scope
 
-- [ ] Regression test added or updated
-- [ ] `python -m pytest -q`
-- [ ] `python -m compileall -q .`
-- [ ] No IDA databases, binaries, logs, or secrets added
+- [ ] Code
+- [ ] Tests
+- [ ] Documentation
+- [ ] Configuration/CI
 
-## Compatibility
+## Verification
 
-<!-- Mention Diaphora/IDA version assumptions and any API changes. -->
+```text
+python -m pytest -q
+python -m compileall -q .
+git diff --check
+```
+
+<!-- Add relevant output and, for IDA-dependent work, the tested backend/version. -->
+
+## Data safety
+
+- [ ] No IDB, binary, SQLite export, diff result, log, secret, or generated artifact is included.
+- [ ] Paths and logs are sanitized.

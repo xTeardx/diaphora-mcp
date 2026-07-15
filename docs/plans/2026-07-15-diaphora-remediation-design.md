@@ -18,4 +18,4 @@ Every behavioral fix starts with a failing regression test. Synthetic SQLite fix
 
 ## GitHub readiness
 
-Add a reproducible CI workflow, tracked lightweight fixtures, license and dependency notices, security/contribution guidance, and issue/PR templates. Do not distribute IDA or Diaphora binaries in this repository.
+Add a reproducible CI workflow, tracked lightweight fixtures, dependency notices, security/contribution guidance, and issue/PR templates. Do not distribute IDA or Diaphora binaries in this repository.
