@@ -8,11 +8,11 @@ and root-cause detection via dependency-chain analysis.
 import os
 import sqlite3
 
-from ..utils.sqlite import check_db, check_results_db, get_func, get_callgraph, resolve_func_names, get_underlying_db_paths, norm_addr, read_adaptive_table, _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP
+from ..utils.sqlite import check_db, check_results_db, get_func, get_callgraph, resolve_func_names, get_underlying_db_paths, norm_addr, read_adaptive_table, _RESULTS_COLUMN_MAP, _UNMATCHED_COLUMN_MAP, _detect_decimal
 from ..utils.connection import get_connection, get_cache_manager
 from ..utils.format import dumps, err_json
 from .repository import IndexedDatabase, CallGraphEngine
-from .mapping import FunctionMapping, canonical_address
+from .mapping import FunctionMapping, canonical_address, resolve_pair, compare_neighbors
 
 
 def build_call_path(db_path: str, start_addr: str, depth: int,
@@ -34,7 +34,7 @@ def build_call_path(db_path: str, start_addr: str, depth: int,
         targets = entry.get("targets", [])
         functions = {}
         for tgt in targets:
-            name = indexed.get_name(tgt) or "?"
+            name = indexed.get_name("0x" + canonical_address(tgt)) or "?"
             functions[tgt] = name
 
         result.append({
@@ -57,6 +57,8 @@ def get_changed_callgraph(
     address: str = "",
     name: str = "",
     match_results_path: str = "",
+    address2: str = "",
+    name2: str = "",
 ) -> str:
     """Compare the callers and callees of a function across two databases."""
     err1 = check_db(db1_path)
@@ -69,54 +71,33 @@ def get_changed_callgraph(
     if not address and not name:
         return err_json("Provide either address or name")
 
-    if not address and name:
-        f1 = get_func(db1_path, name=name)
-        if not f1:
-            return err_json(f"Function '{name}' not found in db1")
-        address = f1["address"]
+    try:
+        func1, func2, identity, mapping = resolve_pair(db1_path, db2_path, address, name, address2, name2, match_results_path)
+    except ValueError as exc:
+        return err_json(str(exc))
+    if not func1:
+        return err_json("Primary function selector is missing or ambiguous")
+    if not func2:
+        return dumps({"change_type": "unknown", "identity": identity, "warning": "Secondary identity is unresolved; no edge changes are inferred"})
+    address = func1["address"]
+    address2 = func2["address"]
+    name1, name2 = func1["name"], func2["name"]
+    cg1 = get_callgraph(db1_path, address)
+    cg2 = get_callgraph(db2_path, address2)
+    callers = compare_neighbors(db1_path, db2_path, cg1["callers"], cg2["callers"], mapping)
+    callees = compare_neighbors(db1_path, db2_path, cg1["callees"], cg2["callees"], mapping)
 
-    func1 = get_func(db1_path, address=address)
-    address2 = ""
-    if match_results_path:
-        try:
-            mapped = FunctionMapping.from_results(match_results_path).by_old(address)
-            if mapped:
-                address2 = mapped.new_address
-        except (FileNotFoundError, ValueError):
-            pass
-    func2 = get_func(db2_path, address=address2 or address)
+    def _format_list(addrs, db_path):
+        names = resolve_func_names(db_path, ["0x" + a for a in addrs])
+        return [{"address": a, "name": names.get(a, names.get("0x" + a, "?"))} for a in addrs]
 
-    if not func1 and not func2:
-        return err_json(f"Function at 0x{address} not found in either database")
-
-    name1 = func1["name"] if func1 else "(not in db1)"
-    name2 = func2["name"] if func2 else "(not in db2)"
-
-    cg1 = get_callgraph(db1_path, address) if func1 else {"callers": [], "callees": []}
-    cg2 = get_callgraph(db2_path, address2 or address) if func2 else {"callers": [], "callees": []}
-
-    set_c1 = set(cg1["callers"])
-    set_c2 = set(cg2["callers"])
-    set_ce1 = set(cg1["callees"])
-    set_ce2 = set(cg2["callees"])
-
-    added_callers = list(set_c2 - set_c1)
-    removed_callers = list(set_c1 - set_c2)
-    kept_callers = list(set_c1 & set_c2)
-
-    added_callees = list(set_ce2 - set_ce1)
-    removed_callees = list(set_ce1 - set_ce2)
-    kept_callees = list(set_ce1 & set_ce2)
-
-    all_addrs = set(added_callers + removed_callers + kept_callers +
-                    added_callees + removed_callees + kept_callees)
-    names1 = resolve_func_names(db1_path, list(all_addrs))
-    names2 = resolve_func_names(db2_path, list(all_addrs))
-    combined_names = {a: names1.get(a) or names2.get(a) or "?" for a in all_addrs}
-
-    def _format_list(addrs):
-        items = [{"address": a, "name": combined_names.get(a, "?")} for a in addrs]
-        return sorted(items, key=lambda x: x.get("address", ""))
+    def _output(delta, kind):
+        return {"total_old": len(cg1[kind]), "total_new": len(cg2[kind]),
+                "added": _format_list(delta["added"], db2_path),
+                "removed": _format_list(delta["removed"], db1_path),
+                "unchanged": delta["unchanged"],
+                "unknown_old": _format_list(delta["unknown_old"], db1_path),
+                "unknown_new": _format_list(delta["unknown_new"], db2_path)}
 
     return dumps({
         "function_name_old": name1,
@@ -124,24 +105,10 @@ def get_changed_callgraph(
         "address": address,
         "address_old": func1.get("address", "") if func1 else "",
         "address_new": func2.get("address", "") if func2 else "",
-        "callers": {
-            "total_old": len(set_c1),
-            "total_new": len(set_c2),
-            "added": _format_list(added_callers),
-            "removed": _format_list(removed_callers),
-            "unchanged": len(kept_callers),
-        },
-        "callees": {
-            "total_old": len(set_ce1),
-            "total_new": len(set_ce2),
-            "added": _format_list(added_callees),
-            "removed": _format_list(removed_callees),
-            "unchanged": len(kept_callees),
-        },
-        "summary": (
-            f"{name2}: +{len(added_callers)}/–{len(removed_callers)} callers, "
-            f"+{len(added_callees)}/–{len(removed_callees)} callees"
-        ),
+        "identity": identity,
+        "callers": _output(callers, "callers"),
+        "callees": _output(callees, "callees"),
+        "summary": "Edges compared through resolved identity; unresolved neighbors remain unknown",
     }, indent=2, default=str)
 
 
@@ -166,47 +133,53 @@ def compare_call_path(
     if not address and not name:
         return err_json("Provide either address or name")
 
-    if not address and name:
-        f1 = get_func(db1_path, name=name)
-        if not f1:
-            return err_json(f"Function '{name}' not found in db1")
-        address = f1["address"]
-
+    try:
+        old, new, identity, mapping = resolve_pair(db1_path, db2_path, address, name, match_results_path=match_results_path)
+    except ValueError as exc:
+        return err_json(str(exc))
+    if not old:
+        return err_json("Primary function selector is missing or ambiguous")
+    if not new:
+        return dumps({"change_type": "unknown", "identity": identity, "warning": "Secondary identity is unresolved"})
+    address, address2 = old["address"], new["address"]
     depth = min(depth, 5)
-    mapping = None
-    address2 = address
-    if match_results_path:
-        try:
-            mapping = FunctionMapping.from_results(match_results_path)
-            mapped_start = mapping.by_old(address)
-            if mapped_start:
-                address2 = mapped_start.new_address
-        except (FileNotFoundError, ValueError):
-            pass
 
     path1 = build_call_path(db1_path, address, depth, direction)
     path2 = build_call_path(db2_path, address2, depth, direction)
 
-    def _flatten(path, translate_old=False):
-        if translate_old and mapping:
-            return {
-                (mapping.by_old(e["address"]).new_address
-                 if mapping.by_old(e["address"]) else e["address"], e["level"])
-                for e in path
-            }
-        return {(e["address"], l) for e in path for l in [e["level"]]}
-
-    set1 = _flatten(path1, translate_old=True)
-    set2 = _flatten(path2)
-    added = [e for e in path2 if (e["address"], e["level"]) not in set1]
-    removed = [
-        e for e in path1
-        if ((mapping.by_old(e["address"]).new_address
-             if mapping and mapping.by_old(e["address"])
-             else e["address"]), e["level"]) not in set2
-    ]
+    translated = {}
+    unknown_old, unknown_new = [], []
+    for entry in path1:
+        old_address = entry["address"]
+        if mapping is not None:
+            match = mapping.by_old("0x" + old_address)
+            target = match.new_address if match else None
+        else:
+            _, counterpart, _, _ = resolve_pair(db1_path, db2_path, "0x" + old_address)
+            target = canonical_address(counterpart["address"], decimal_database=_detect_decimal(get_connection(db2_path))) if counterpart else None
+        if target:
+            translated[(old_address, entry["level"])] = (target, entry["level"])
+        else:
+            unknown_old.append(entry)
+    set1 = set(translated.values())
+    set2 = {(canonical_address(e["address"]), e["level"]) for e in path2}
+    added = []
+    for entry in path2:
+        new_address = canonical_address(entry["address"])
+        if (new_address, entry["level"]) in set1:
+            continue
+        if mapping is not None:
+            known = mapping.by_new("0x" + new_address) is not None or mapping.is_added(new_address)
+        else:
+            _, counterpart, _, _ = resolve_pair(db2_path, db1_path, "0x" + new_address)
+            known = counterpart is not None
+        (added if known else unknown_new).append(entry)
+    removed = [e for e in path1 if (e["address"], e["level"]) in translated and translated[(e["address"], e["level"])] not in set2]
 
     return dumps({
+        "identity": identity,
+        "unknown_old": unknown_old[:20],
+        "unknown_new": unknown_new[:20],
         "function_address": address,
         "function_address_new": address2,
         "direction": direction,
@@ -270,10 +243,7 @@ def find_patch_root(
     for r in results_data:
         a2 = r.get("address2", "")
         if a2:
-            a2n = canonical_address(
-                a2,
-                decimal_database=mapping.target_decimal if mapping else False,
-            )
+            a2n = canonical_address(a2)
             changed_addrs.add(a2n)
             if a2n not in addr_to_result:
                 addr_to_result[a2n] = r
@@ -284,10 +254,7 @@ def find_patch_root(
             addr = u.get("address", "")
             if addr:
                 changed_addrs.add(
-                    canonical_address(
-                        addr,
-                        decimal_database=mapping.target_decimal if mapping else False,
-                    )
+                    canonical_address(addr)
                 )
 
     candidates = []
@@ -298,10 +265,10 @@ def find_patch_root(
         cg_engine2._ensure_loaded()
         
         for addr in changed_addrs:
-            meta = indexed_db2.get_metadata(addr)
+            meta = indexed_db2.get_metadata("0x" + canonical_address(addr))
             if not meta:
                 continue
-            fname = indexed_db2.get_name(addr) or f"sub_{addr}"
+            fname = indexed_db2.get_name("0x" + canonical_address(addr)) or f"sub_{addr}"
             insns = meta.get("instructions", 0)
             cc = meta.get("cyclomatic_complexity", 0)
 

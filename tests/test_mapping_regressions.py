@@ -204,8 +204,8 @@ def test_metadata_transfer_maps_decimal_source_to_rebased_decimal_target(tmp_pat
         old_db,
         new_db,
         rows=[
-            ("4198400", "root", "5246976", "root"),
-            ("4198416", "child", "5246992", "child"),
+            ("00401000", "root", "00501000", "root"),
+            ("00401010", "child", "00501010", "child"),
         ],
     )
 

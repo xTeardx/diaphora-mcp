@@ -1,45 +1,44 @@
 # Tool reference
 
-The server registers tools through `diaphora_mcp/diaphora_mcp_server.py`. Clients should discover the exact JSON schemas through MCP `tools/list`; this page explains selection by task.
+The server exposes 10 core tools by default. Discover exact JSON schemas through MCP `tools/list`.
 
-## Export
+| Tool | Purpose |
+| --- | --- |
+| `export_idb_to_diaphora` | Export one IDB; explicit `headless`, `auto`, or `gui` backend |
+| `batch_export_and_diff` | Validated headless export of old/new IDBs, diff, bounded first page |
+| `diff_diaphora_dbs` | Compare existing official exports, preserving existing outputs |
+| `get_diff_summary` | Aggregated match/unmatched counts and bounded examples |
+| `get_diff_results` | Filtered and sorted SQL pages of matches and unmatched rows |
+| `get_export_info` | Export metadata and function/instruction counts |
+| `search_export_db` | Search function names, instruction counts, complexity |
+| `get_function_pseudocode` | Retrieve available pseudocode/assembly and metadata |
+| `compare_functions` | Code and measured differences for a resolved old/new pair |
+| `get_changed_callgraph` | Compare mapped neighbors; unresolved edges remain separate |
 
-- `export_idb_to_diaphora`: export one IDB; choose `export_mode` explicitly.
-- `batch_export_and_diff`: headless export of both inputs, Diaphora diff, and a bounded summary.
+## Results pagination
 
-## Diff and results
+`get_diff_results(results_path, match_type="all", min_ratio=0.0, limit=500, unmatched_limit=100, offset=0, unmatched_offset=0, sort_by="ratio", sort_order="asc")`
 
-- `diff_diaphora_dbs`: run a diff over two existing official exports.
-- `get_diff_summary`: compact statistics and top matches.
-- `get_diff_results`: filtered match/unmatched rows.
+- Page sizes must be positive integers and are capped at 5000; offsets must be nonnegative integers.
+- `sort_by`: `ratio`, `address`, `address2`, `name`, `name2`, or `type`; `sort_order`: `asc` or `desc`.
+- Lower ratios come first by default, followed by a stable row tie-breaker.
+- Follow `next_offset` and `next_unmatched_offset` independently until null. Counts cover complete sets; `total_matches` respects the match filter, `counts` gives all categories, and unmatched rows have their own total.
+- Retain the same filter/sort arguments between pages. Result files must remain unchanged while paging.
 
-## Database inspection
+## Function identity
 
-- `get_export_info`: function count and export metadata.
-- `search_export_db`: search names, instruction counts, or complexity.
-- `get_function_pseudocode`: retrieve pseudocode/assembly for a known function.
+Pass `match_results_path` for cross-version comparisons. An explicit second selector can identify the pair directly; otherwise supplied Diaphora mappings take precedence. Without a mapping, only unambiguous name/hash evidence can establish a candidate. Equal addresses alone do not identify corresponding functions. Missing or ambiguous matches are reported as unresolved; invalid match files return errors.
 
-## Matching and behavior
+For code analysis, export with `use_decompiler=true` and `summaries_only=false`. Missing pseudocode is unavailable evidence, not proof that behavior stayed unchanged.
 
-- `find_function_match`: locate a likely counterpart with confidence and evidence.
-- `compare_functions`: compare both sides; provide `match_results_path` when rebasing is present.
-- `explain_similarity`: break down similarity signals.
-- `detect_behavior_change`: summarize likely logic changes.
+## Optional legacy tools
 
-## Graph and change prioritization
+Set `DIAPHORA_ENABLE_LEGACY_TOOLS=1` before starting the server to expose the previous 21-tool interface. The additional tools are:
 
-- `get_changed_callgraph`: compare callers/callees, preferably with result mapping.
-- `compare_call_path`: compare call paths to a bounded depth.
-- `find_patch_root`: identify likely upstream causes in changed dependency chains.
-- `rank_changes`: prioritize functions for review.
-- `summarize_patch`: produce a higher-level report.
+`find_function_match`, `explain_similarity`, `detect_behavior_change`, `compare_call_path`, `find_patch_root`, `rank_changes`, `summarize_patch`, `analyze_diff_results`, `detect_security_patches`, `transfer_metadata`, and `performance_report`.
 
-## Security and metadata
+These are compatibility and triage aids. Feature/ranking/root scores use arbitrary weights, do not explain Diaphora's internal ratio, and do not measure calibrated confidence, importance, exploitability or causation. Behavior summaries describe measured differences; security flags indicate patterns requiring inspection. Unmatched functions are not confirmed additions/deletions. Metadata transfer prepares data for review and does not apply changes to IDA.
 
-- `analyze_diff_results` and `detect_security_patches`: heuristic security triage only.
-- `transfer_metadata`: prepare selective metadata transfer; review before applying it in IDA.
-- `performance_report`: inspect cache/performance state.
+## Input/output contract
 
-## Input contract
-
-Database/results tools expect files produced by Diaphora. Do not pass `.i64` directly to results tools. Keep old/new order consistent: the primary database is the old version, and the secondary database is the new version.
+Inspection tools accept Diaphora exports; diff tools require the supported official Diaphora 3.4.1 schema baseline. Results tools expect `.diaphora` SQLite results, never an `.i64`/`.idb`. Old is primary; new is secondary. Newly generated exports/results must stay below `DIAPHORA_OUTPUT_ROOT` (or the documented input-directory fallback) and cannot replace an existing target.

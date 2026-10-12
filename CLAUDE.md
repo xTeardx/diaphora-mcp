@@ -9,7 +9,8 @@ This repository contains a local stdio MCP server for:
 - exporting `.i64`/`.idb` databases through Diaphora;
 - comparing official Diaphora SQLite exports;
 - matching functions across rebased binaries;
-- analyzing call graphs, rankings, security signals, and patch reports.
+- inspecting matched code and mapped call graphs through 10 core tools;
+- optional legacy heuristics only with `DIAPHORA_ENABLE_LEGACY_TOOLS=1`.
 
 ## Source map
 

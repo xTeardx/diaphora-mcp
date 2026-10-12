@@ -116,8 +116,8 @@ def analyze_diff_results(
     # Batch-load function details from underlying databases
     addrs1 = [r.get("address", "") for r in all_results]
     addrs2 = [r.get("address2", "") for r in all_results]
-    funcs1 = get_funcs_batch(db1_path, addrs1) if db1_path else {}
-    funcs2 = get_funcs_batch(db2_path, addrs2) if db2_path else {}
+    funcs1 = get_funcs_batch(db1_path, addrs1, addresses_are_hex=True) if db1_path else {}
+    funcs2 = get_funcs_batch(db2_path, addrs2, addresses_are_hex=True) if db2_path else {}
 
     for row in all_results:
         addr1 = row.get("address", "")
@@ -268,8 +268,8 @@ def detect_security_patches(
     # Batch-load all functions to avoid slow O(N) database connections
     addrs1 = [r.get("address", "") for r in results]
     addrs2 = [r.get("address2", "") for r in results]
-    funcs1 = get_funcs_batch(db1_path, addrs1) if db1_path else {}
-    funcs2 = get_funcs_batch(db2_path, addrs2) if db2_path else {}
+    funcs1 = get_funcs_batch(db1_path, addrs1, addresses_are_hex=True) if db1_path else {}
+    funcs2 = get_funcs_batch(db2_path, addrs2, addresses_are_hex=True) if db2_path else {}
 
     for row in results:
         addr1 = row.get("address", "")
@@ -325,8 +325,10 @@ def detect_security_patches(
                                                      "strncpy", "strncat", "snprintf"]):
             match_indicators.append("memory_safety")
         removed_text = " ".join(removed_lines)
-        added_text_all = " ".join(added_lines)
-        if any(kw in removed_text or kw in added_text_all for kw in ["memcpy", "strcpy", "sprintf", "gets", "scanf"]):
+        unsafe_calls = re.compile(r"\b(memcpy|strcpy|sprintf|gets|scanf)\s*\(", re.IGNORECASE)
+        removed_calls = set(unsafe_calls.findall(removed_text.lower()))
+        remaining_calls = set(unsafe_calls.findall(pseudo2.lower()))
+        if removed_calls - remaining_calls:
             match_indicators.append("unsafe_func_removed")
 
         # 6. Crypto changes

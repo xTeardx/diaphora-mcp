@@ -8,8 +8,9 @@ Diaphora MCP is a local stdio server. The MCP client starts the Python process a
 | --- | --- | --- |
 | `IDAT_PATH` | Yes for headless | Absolute path to `idat.exe` or `idat64.exe` |
 | `DIAPHORA_DIR` | Yes for headless/diff | Directory containing the Diaphora scripts |
-| `DIAPHORA_OUTPUT_ROOT` | Recommended | Root inside which new export targets are allowed |
+| `DIAPHORA_OUTPUT_ROOT` | Recommended | Root inside which new export and diff targets are allowed |
 | `DIAPHORA_PYTHON` | Optional | Python interpreter for the Diaphora diff process |
+| `DIAPHORA_ENABLE_LEGACY_TOOLS` | Optional | Exactly `1` restores the 11 legacy tools; otherwise 10 core tools |
 
 Use an output root dedicated to generated files. The server refuses output paths outside the configured root and refuses overwriting an existing target.
 
@@ -46,3 +47,5 @@ Use `gui` only when the requested IDB is open in the GUI and you explicitly want
 ## Restarting
 
 After changing Python code or environment variables, restart the MCP server from the client. If the process was started manually on Windows, stop only the Diaphora server process and start it again; do not terminate unrelated `idalib-mcp` or IDA processes.
+
+The output root must already exist. Set it explicitly when the two IDBs live in different directories. New targets are never overwritten. Legacy-tool selection is read at startup and requires a restart.

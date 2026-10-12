@@ -30,18 +30,12 @@ RESULTS     = <steps.diff.output>
 
 ```text
 get_diff_summary(results_path=RESULTS)
-get_diff_results(results_path=RESULTS, match_type="best", limit=20)
+get_diff_results(results_path=RESULTS, match_type="partial", limit=20, offset=0)
 ```
 
 ## 3. Follow one function
 
 ```text
-find_function_match(
-  db1_path=OLD_SQLITE,
-  db2_path=NEW_SQLITE,
-  address="1800d6b80"
-)
-
 compare_functions(
   db1_path=OLD_SQLITE,
   db2_path=NEW_SQLITE,
@@ -58,3 +52,5 @@ get_changed_callgraph(
 ```
 
 If a tool reports an unmatched function, verify the old/new order, the input schema, and whether the function was actually present in both builds.
+
+For subsequent pages, pass `next_offset` and `next_unmatched_offset` from the preceding response. Keep the other filter and sort arguments unchanged.

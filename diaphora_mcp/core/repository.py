@@ -1,96 +1,13 @@
 """
 Diaphora MCP — caching repository layer and in-memory call graph engine.
 
-Provides LRU-cached access to function metadata, pseudocode, and callgraph,
-plus a preloaded in-memory adjacency list for O(1) BFS traversals.
+Provides function indexes and a preloaded adjacency list for graph traversal.
 """
 import sqlite3
-from functools import lru_cache
 from typing import Dict, List, Optional, Any, Tuple
 
 from ..utils.sqlite import norm_addr, _detect_decimal, get_query_addresses
 from ..utils.connection import get_connection
-
-
-# ---------------------------------------------------------------------------
-# DatabaseRepository — LRU-cached data access
-# ---------------------------------------------------------------------------
-
-class DatabaseRepository:
-    """Thread-safe (per-connection) cached reader for a single .sqlite database.
-
-    Each MCP tool should create its own instance (or share one within a
-    single tool call).  LRU caches are bounded so memory stays predictable.
-    """
-
-    __slots__ = ("db_path",)
-
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-
-    # -- Metadata (lightweight, excludes pseudocode/assembly) ---------------
-
-    @lru_cache(maxsize=2000)
-    def get_function_metadata(self, address: str) -> Optional[Dict[str, Any]]:
-        """Return a lightweight function row (no pseudocode)."""
-        conn = get_connection(self.db_path)
-        addrs = get_query_addresses(conn, address)
-        placeholders = ",".join("?" for _ in addrs)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT address, name, nodes, edges, instructions, "
-            f"cyclomatic_complexity, prototype, bytes_hash "
-            f"FROM functions WHERE address IN ({placeholders})",
-            addrs,
-        )
-        row = cur.fetchone()
-        return dict(row) if row else None
-
-    # -- Pseudocode (separate cache so metadata stays lightweight) ----------
-
-    @lru_cache(maxsize=500)
-    def get_pseudocode(self, address: str) -> str:
-        """Return the pseudocode blob for *address* (cached)."""
-        conn = get_connection(self.db_path)
-        addrs = get_query_addresses(conn, address)
-        placeholders = ",".join("?" for _ in addrs)
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT pseudocode FROM functions WHERE address IN ({placeholders})",
-            addrs,
-        )
-        row = cur.fetchone()
-        return row[0] if row and row[0] else ""
-
-    # -- Callgraph (cached) -------------------------------------------------
-
-    @lru_cache(maxsize=500)
-    def get_cached_callgraph(self, address: str) -> Dict[str, List[str]]:
-        """Return {"callers": [...], "callees": [...]} for *address*."""
-        conn = get_connection(self.db_path)
-        use_decimal = _detect_decimal(conn)
-        addrs = get_query_addresses(use_decimal, address)
-        placeholders = ",".join("?" for _ in addrs)
-        cur = conn.cursor()
-        cur.execute(f"SELECT id FROM functions WHERE address IN ({placeholders})", addrs)
-        row = cur.fetchone()
-        if not row:
-            return {"callers": [], "callees": []}
-        fid = row[0]
-
-        callers: List[str] = []
-        callees: List[str] = []
-        cur.execute(
-            "SELECT address, type FROM callgraph WHERE func_id = ?", (fid,)
-        )
-        for addr_str, ctype in cur.fetchall():
-            norm_addr_str = norm_addr(addr_str, use_decimal)
-            if ctype == "caller":
-                callers.append(norm_addr_str)
-            else:
-                callees.append(norm_addr_str)
-        return {"callers": callers, "callees": callees}
 
 
 # ---------------------------------------------------------------------------
