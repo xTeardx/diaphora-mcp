@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.1.0 — 2026-10-12
 
 - Bounded the MCP Python SDK dependency to 1.x, preserving the FastMCP API on clean installs.
 - Reduced the default MCP surface to 10 comparison tools; the previous 21 tools remain opt-in through `DIAPHORA_ENABLE_LEGACY_TOOLS=1`.
@@ -9,6 +9,8 @@
 - Added bounded SQL result pagination and change-oriented deterministic sorting.
 - Strengthened official diff-schema validation and corrected unsafe-call removal signals.
 - Removed unused placeholder/instrumentation/repository wrappers and clarified legacy heuristic limitations.
+
+## v1.0.6 — 2026-07-15
 
 - Added authoritative Diaphora old-to-new function mapping for rebased
   cross-version analysis.
