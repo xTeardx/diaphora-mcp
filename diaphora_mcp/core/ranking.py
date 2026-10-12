@@ -73,8 +73,8 @@ def rank_changes(
     # Batch-load all functions in one query per database
     addrs1 = [r.get("address", "") for r in all_rows]
     addrs2 = [r.get("address2", "") for r in all_rows]
-    funcs1 = get_funcs_batch(db1_path, addrs1) if db1_path else {}
-    funcs2 = get_funcs_batch(db2_path, addrs2) if db2_path else {}
+    funcs1 = get_funcs_batch(db1_path, addrs1, addresses_are_hex=True) if db1_path else {}
+    funcs2 = get_funcs_batch(db2_path, addrs2, addresses_are_hex=True) if db2_path else {}
 
     for row in all_rows:
         addr1 = row.get("address", "")
@@ -128,6 +128,9 @@ def rank_changes(
     ranked.sort(key=lambda x: -x["score"])
 
     return dumps({
+        "heuristic_only": True,
+        "score_kind": "review_priority_heuristic",
+        "note": "Scores use arbitrary review weights, not calibrated importance, risk, or confidence.",
         "config": config_info,
         "total_matches": len(ranked),
         "top_n": min(top_n, len(ranked)),

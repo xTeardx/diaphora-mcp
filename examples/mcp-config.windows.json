@@ -1,10 +1,8 @@
 {
   "mcpServers": {
     "diaphora": {
-      "command": "cmd",
+      "command": "C:/src/diaphora-mcp/.venv/Scripts/python.exe",
       "args": [
-        "/c",
-        "python",
         "C:/src/diaphora-mcp/diaphora_mcp_server.py"
       ],
       "env": {

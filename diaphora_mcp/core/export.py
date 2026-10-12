@@ -13,6 +13,7 @@ import threading
 import time
 import xmlrpc.client
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 
 import requests
@@ -26,6 +27,7 @@ from ..utils.format import dumps, err_json
 
 
 _EXPORT_MODES = {"auto", "headless", "gui"}
+_BATCH_OUTPUT_ROOT = ContextVar("diaphora_batch_output_root", default=None)
 
 
 def _normalize_export_mode(export_mode: str) -> str | None:
@@ -45,7 +47,7 @@ def _schema_for_export(path: str) -> tuple[str | None, str | None]:
 
 def _validate_export_output_path(idb_path: str, output_path: str) -> str | None:
     """Проверить, что новый файл экспорта находится внутри разрешённого каталога."""
-    root = Path(os.environ.get("DIAPHORA_OUTPUT_ROOT") or Path(idb_path).parent)
+    root = Path(os.environ.get("DIAPHORA_OUTPUT_ROOT") or _BATCH_OUTPUT_ROOT.get() or Path(idb_path).parent)
     root = Path(os.path.realpath(root))
     target = Path(output_path)
     target_real = Path(os.path.realpath(target))
@@ -83,6 +85,7 @@ def _publish_staged_export(staged_path: str, output_path: str) -> str | None:
 
 
 def _remove_staged_export(staged_path: str) -> None:
+    close_connection(staged_path)
     try:
         if os.path.lexists(staged_path):
             os.remove(staged_path)
@@ -242,10 +245,8 @@ async def run_export(
                 else:
                     idle_duration = time.time() - last_change_time
                     if idle_duration > idle_timeout:
-                        if check_db_for_diff(output_path) is None:
-                            log.info("  Watchdog: DB structure is fully valid, but process is hung. Force terminating.")
-                            proc.kill()
-                            break
+                        log.info("Export is idle; waiting for process completion within the export timeout")
+                        last_change_time = time.time()
 
                 await asyncio.sleep(5)
         finally:
@@ -272,6 +273,8 @@ async def run_export(
         log.info(f"Output has functions: {has_functions}")
         log.info(f"Crash file present: {crash_present}")
         log.log_subprocess_output(stdout or "", stderr or "")
+        if proc.returncode != 0:
+            return f"IDA export failed with exit code {proc.returncode}"
 
         # Clean up crash-file artifact if DB is actually valid
         if crash_present and has_functions:
@@ -718,6 +721,9 @@ async def export_idb_to_diaphora(
     minutes for large binaries. Default is False for fast export; re-export
     with decompiler only if pseudocode analysis is needed.
     """
+    idb_path = os.path.abspath(idb_path)
+    if output_path:
+        output_path = os.path.abspath(output_path)
     mode = _normalize_export_mode(export_mode)
     if mode is None:
         return err_json(
@@ -818,15 +824,23 @@ async def export_idb_to_diaphora(
     if is_active_in_gui:
         import shutil
         base_name, ext = os.path.splitext(idb_path)
-        temp_idb_path = f"{base_name}_diaphora_tmp{ext}"
+        temp_idb_path = f"{base_name}_diaphora_tmp_{uuid.uuid4().hex}{ext}"
+        temp_created = False
         try:
-            shutil.copy2(idb_path, temp_idb_path)
+            with open(idb_path, "rb") as source, open(temp_idb_path, "xb") as target:
+                temp_created = True
+                shutil.copyfileobj(source, target)
             target_idb_path = temp_idb_path
         except Exception as e:
+            if temp_created:
+                _remove_staged_export(temp_idb_path)
             return err_json(f"Failed to create temporary copy of active database to bypass lock: {e}")
 
     try:
         err = await run_export(target_idb_path, output_path, use_decompiler, summaries_only)
+    except BaseException:
+        _remove_staged_export(output_path)
+        raise
     finally:
         if temp_idb_path and os.path.exists(temp_idb_path):
             try:
@@ -929,161 +943,65 @@ async def batch_export_and_diff(
             "the complete official Diaphora schema"
         )
 
+    for name, value in (("limit", limit), ("unmatched_limit", unmatched_limit)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return err_json(f"{name} must be an integer >= 1")
+    idb1_path, idb2_path = os.path.abspath(idb1_path), os.path.abspath(idb2_path)
     b1 = os.path.splitext(os.path.basename(idb1_path))[0]
     b2 = os.path.splitext(os.path.basename(idb2_path))[0]
-
-    if not output_dir:
-        output_dir = os.path.dirname(os.path.abspath(idb1_path))
-    os.makedirs(output_dir, exist_ok=True)
-
-    sqlite1 = os.path.join(output_dir, f"{b1}.diaphora.sqlite")
-    sqlite2 = os.path.join(output_dir, f"{b2}.diaphora.sqlite")
+    for path, label in [(idb1_path, "idb1"), (idb2_path, "idb2")]:
+        if not os.path.isfile(path):
+            return err_json(f"{label} not found: {path}")
+    root = os.environ.get("DIAPHORA_OUTPUT_ROOT") or os.path.dirname(os.path.abspath(idb1_path))
+    output_dir = os.path.abspath(output_dir or root)
+    name1, name2 = (f"old_{b1}", f"new_{b2}") if b1.casefold() == b2.casefold() else (b1, b2)
+    sqlite1 = os.path.join(output_dir, f"{name1}.diaphora.sqlite")
+    sqlite2 = os.path.join(output_dir, f"{name2}.diaphora.sqlite")
     diff_out = os.path.join(output_dir, f"{b1}_vs_{b2}.diaphora")
-
-    # Validate input files before setting up logger
-    for p, label in [(idb1_path, "idb1"), (idb2_path, "idb2")]:
-        if not os.path.isfile(p):
-            return err_json(f"{label} not found: {p}")
-
-    desc = f"Batch pipeline: {b1} + {b2}"
-    with OperationLogger(desc, tag="batch") as batch_log:
-        if use_decompiler:
-            batch_log.info(
-                "WARNING: Decompiler enabled — both exports will be significantly slower "
-                "(potentially 10–60+ min total for large binaries). Consider setting "
-                "use_decompiler=False for a fast first pass."
-            )
-
-        batch_log.info(f"idb1: {idb1_path}")
-        batch_log.info(f"idb2: {idb2_path}")
-        batch_log.info(f"use_decompiler: {use_decompiler}")
-        batch_log.info(f"summaries_only: {summaries_only}")
-        batch_log.info(f"sqlite1: {sqlite1}")
-        batch_log.info(f"sqlite2: {sqlite2}")
-        batch_log.info(f"diff_out: {diff_out}")
-
-        step_results = {}
-        result_data = None
-
-        try:
-            err = await run_export(idb1_path, sqlite1, use_decompiler, summaries_only)
-            if err:
-                batch_log.error(f"Export 1 failed: {err}")
-                result_data = {"error": f"Export of {b1} failed: {err}", "steps": step_results}
-            else:
-                step_results["export1"] = {
-                    "database": b1,
-                    "output": sqlite1,
-                    "size_bytes": os.path.getsize(sqlite1),
-                }
-                batch_log.info(f"Export 1 OK: {sqlite1} ({os.path.getsize(sqlite1)} bytes)")
-
-                # Step 2: export secondary
-                err = await run_export(idb2_path, sqlite2, use_decompiler, summaries_only)
-                if err:
-                    batch_log.error(f"Export 2 failed: {err}")
-                    result_data = {"error": f"Export of {b2} failed: {err}", "steps": step_results}
-                else:
-                    step_results["export2"] = {
-                        "database": b2,
-                        "output": sqlite2,
-                        "size_bytes": os.path.getsize(sqlite2),
-                    }
-                    batch_log.info(f"Export 2 OK: {sqlite2} ({os.path.getsize(sqlite2)} bytes)")
-
-                    # Step 3: diff
-                    batch_log.info("Starting diff...")
-                    try:
-                        from ..utils.connection import close_connection
-                        close_connection(sqlite1)
-                        close_connection(sqlite2)
-                        close_connection(diff_out)
-                        # Remove old .diaphora file so Diaphora can write new one without PermissionError
-                        for old_path in [diff_out, f"{diff_out}-wal", f"{diff_out}-shm"]:
-                            try:
-                                if os.path.isfile(old_path):
-                                    os.remove(old_path)
-                            except Exception:
-                                pass
-                        proc = subprocess.run(
-                            [PYTHON, DIAPHORA_SCRIPT, sqlite1, sqlite2, "-o", diff_out],
-                            cwd=DIAPHORA_DIR,
-                            capture_output=True,
-                            stdin=subprocess.DEVNULL,
-                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-                            text=True,
-                            timeout=3600,
-                        )
-                        batch_log.info(f"Diff exit code: {proc.returncode}")
-                        batch_log.log_subprocess_output(proc.stdout or "", proc.stderr or "")
-
-                        if proc.returncode != 0:
-                            result_data = {
-                                "error": f"Diff failed with exit code {proc.returncode}",
-                                "steps": step_results,
-                                "stdout": (proc.stdout or "")[-3000:],
-                                "stderr": (proc.stderr or "")[-3000:],
-                            }
-                        elif not os.path.isfile(diff_out):
-                            batch_log.error("Diff produced no output file")
-                            result_data = {
-                                "error": "Diff completed but no output file produced",
-                                "steps": step_results,
-                                "stdout": (proc.stdout or "")[-3000:],
-                                "stderr": (proc.stderr or "")[-3000:],
-                            }
-                        else:
-                            diff_size = os.path.getsize(diff_out)
-                            step_results["diff"] = {
-                                "output": diff_out,
-                                "size_bytes": diff_size,
-                            }
-                            batch_log.info(f"Diff output: {diff_out} ({diff_size} bytes)")
-
-                            # Step 4: read and return results
-                            from .diff import read_results as _read_results
-                            try:
-                                results = _read_results(diff_out, limit=limit, unmatched_limit=unmatched_limit)
-                                batch_log.info(f"Diff results: {results['total_matches']} matches, {results['unmatched_count']} unmatched")
-                                result_data = {
-                                    "success": True,
-                                    "steps": step_results,
-                                    "summary": {
-                                        "best_matches": results["counts"]["best"],
-                                        "partial_matches": results["counts"]["partial"],
-                                        "unreliable_matches": results["counts"]["unreliable"],
-                                        "multimatches": results["counts"]["multimatch"],
-                                        "unmatched_primary": results["unmatched_count"],
-                                    },
-                                    "results": results,
-                                }
-                            except Exception as exc:
-                                batch_log.error(f"Failed to read diff results: {exc}")
-                                result_data = {"error": f"Failed to read diff results: {exc}", "steps": step_results}
-
-                    except subprocess.TimeoutExpired:
-                        batch_log.error("Diff timed out after 3600 s")
-                        result_data = {"error": "Diff timed out after 3600 s", "steps": step_results}
-                    except Exception as exc:
-                        batch_log.error(f"Diff failed: {exc}")
-                        result_data = {"error": f"Diff failed: {exc}", "steps": step_results}
-
-        finally:
-            if cleanup:
-                batch_log.info("Evicting databases from cache and cleaning up transient SQLite files...")
-                cache_mgr = get_cache_manager()
-                for sqlite_path in [sqlite1, sqlite2]:
-                    try:
-                        cache_mgr.evict(sqlite_path)
-                    except Exception as e:
-                        batch_log.warn(f"Failed to evict database {sqlite_path}: {e}")
-
-                for path in [sqlite1, f"{sqlite1}-wal", f"{sqlite1}-shm",
-                             sqlite2, f"{sqlite2}-wal", f"{sqlite2}-shm"]:
-                    try:
-                        if os.path.exists(path):
-                            force_delete_file(path)
-                    except Exception as e:
-                        batch_log.warn(f"Failed to delete temporary file {path}: {e}")
-
-    return dumps(result_data)
+    # Check every destination before creating a directory or starting IDA.
+    for path in (sqlite1, sqlite2, diff_out):
+        error = _validate_export_output_path(idb1_path, path)
+        if error:
+            return err_json(error)
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except OSError:
+        return err_json("Unable to create output directory")
+    steps = {}
+    owned = []
+    log = OperationLogger(f"Batch pipeline: {b1} + {b2}", tag="batch")
+    log.__enter__()
+    root_token = _BATCH_OUTPUT_ROOT.set(root)
+    try:
+        for key, source, target in [("export1", idb1_path, sqlite1), ("export2", idb2_path, sqlite2)]:
+            result = json.loads(await export_idb_to_diaphora(
+                source, target, use_decompiler, summaries_only, export_mode="headless"
+            ))
+            if "error" in result:
+                return dumps({"error": result["error"], "steps": steps})
+            log.info(f"{key} completed")
+            owned.append(target)
+            steps[key] = {"database": os.path.basename(source), "output": target,
+                          "size_bytes": os.path.getsize(target)}
+        from .diff import _diff_diaphora_dbs_async
+        results = await _diff_diaphora_dbs_async(sqlite1, sqlite2, diff_out, limit, unmatched_limit)
+        if "error" in results:
+            return dumps({**results, "steps": steps})
+        steps["diff"] = {"output": diff_out, "size_bytes": os.path.getsize(diff_out)}
+        return dumps({"success": True, "steps": steps, "results": results,
+                      "summary": {"best_matches": results["counts"]["best"],
+                                  "partial_matches": results["counts"]["partial"],
+                                  "unreliable_matches": results["counts"]["unreliable"],
+                                  "multimatches": results["counts"]["multimatch"],
+                                  "unmatched_primary": results.get("unmatched_counts", {}).get("primary", 0),
+                                  "unmatched_secondary": results.get("unmatched_counts", {}).get("secondary", 0),
+                                  "unmatched_total": results["unmatched_count"]}})
+    except Exception:
+        return dumps({"error": "Batch comparison failed", "steps": steps})
+    finally:
+        log.__exit__(None, None, None)
+        _BATCH_OUTPUT_ROOT.reset(root_token)
+        if cleanup:
+            for path in owned:
+                close_connection(path)
+                _remove_staged_export(path)

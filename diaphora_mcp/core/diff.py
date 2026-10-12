@@ -53,232 +53,197 @@ def read_results(
     min_ratio: float = 0.0,
     limit: int = 500,
     unmatched_limit: int = 100,
+    offset: int = 0,
+    unmatched_offset: int = 0,
+    sort_by: str = "ratio",
+    sort_order: str = "asc",
 ):
-    """Read a .diaphora results file and return structured data.
-
-    Schema-adaptive: detects available columns and maps known variants
-    (address/addr1, address2/addr2, ratio/similarity, etc.).
-    """
+    """Read bounded, deterministic pages; lower ratios surface changes first."""
+    import math
+    from ..utils.sqlite import resolve_columns
+    for name, value, minimum in (
+        ("limit", limit, 1), ("unmatched_limit", unmatched_limit, 1),
+        ("offset", offset, 0), ("unmatched_offset", unmatched_offset, 0),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ValueError(f"{name} must be an integer >= {minimum}")
+    if match_type not in MATCH_TYPES:
+        raise ValueError("Unknown match_type")
+    if isinstance(min_ratio, bool) or not isinstance(min_ratio, (int, float)) or not math.isfinite(min_ratio) or not 0 <= min_ratio <= 1:
+        raise ValueError("min_ratio must be between 0 and 1")
+    if sort_by not in ("ratio", "address", "address2", "name", "name2", "type"):
+        raise ValueError("Unsupported sort_by")
+    if sort_order not in ("asc", "desc"):
+        raise ValueError("sort_order must be asc or desc")
+    limit, unmatched_limit = min(limit, 5000), min(unmatched_limit, 5000)
     conn = get_connection(results_path)
     conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    cur.execute("SELECT * FROM config")
-    config_info = dict(cur.fetchone() or {})
-
-    # Build adaptive WHERE clause for match_type filter
-    mtypes = MATCH_TYPES.get(match_type, MATCH_TYPES["all"])
-    available_cols = get_table_columns(results_path, "results")
-
-    # Determine the actual column name for "type"
-    type_col = "type"
-    if type_col not in available_cols:
-        for variant in ["match_type", "result_type"]:
-            if variant in available_cols:
-                type_col = variant
-                break
-
-    placeholders = ",".join("?" for _ in mtypes)
-    effective_limit = min(limit or 500, 5000) if limit and limit > 0 else 500
-
-    # Build safe ORDER BY — use available ratio column
-    ratio_col = "ratio"
-    if ratio_col not in available_cols:
-        for variant in ["similarity", "match_ratio", "confidence"]:
-            if variant in available_cols:
-                ratio_col = variant
-                break
-
-    # Read results using adaptive column detection
-    extra_where = f"{type_col} IN ({placeholders})"
+    columns = dict(resolve_columns(get_table_columns(results_path, "results"), _RESULTS_COLUMN_MAP))
+    for key in ("type", "ratio", sort_by):
+        if not columns.get(key):
+            raise ValueError(f"Results schema missing {key} column")
+    type_col, ratio_col = columns["type"], columns["ratio"]
+    mtypes = MATCH_TYPES[match_type]
+    where = f'"{type_col}" IN ({",".join("?" for _ in mtypes)})'
+    params = tuple(mtypes)
     if min_ratio > 0:
-        extra_where += f" AND CAST({ratio_col} AS REAL) >= ?"
-        raw_results = read_adaptive_table(
-            results_path, _RESULTS_COLUMN_MAP, "results",
-            extra_where=extra_where,
-            params=tuple(mtypes) + (min_ratio,),
-            row_factory=sqlite3.Row,
-        )
-        # Filter by mtypes and min_ratio in Python (the SQL WHERE may not match
-        # column names exactly after adaptive mapping)
-        raw_results = [
-            r for r in raw_results
-            if r.get("type") in mtypes
-        ]
-        # Sort by ratio descending, handling None/string
-        def _ratio_key(r):
-            v = r.get("ratio")
-            try:
-                return float(v) if v is not None else 0.0
-            except (TypeError, ValueError):
-                return 0.0
-        raw_results.sort(key=_ratio_key, reverse=True)
-    else:
-        raw_results = read_adaptive_table(
-            results_path, _RESULTS_COLUMN_MAP, "results",
-            extra_where=extra_where,
-            params=tuple(mtypes),
-            row_factory=sqlite3.Row,
-        )
-        raw_results = [r for r in raw_results if r.get("type") in mtypes]
-        def _ratio_key(r):
-            v = r.get("ratio")
-            try:
-                return float(v) if v is not None else 0.0
-            except (TypeError, ValueError):
-                return 0.0
-        raw_results.sort(key=_ratio_key, reverse=True)
-
-    # Counts via GROUP BY (always works regardless of column names)
-    counts = {"best": 0, "partial": 0, "unreliable": 0, "multimatch": 0}
-    try:
-        cur.execute(f"SELECT {type_col}, count(*) as cnt FROM results GROUP BY {type_col}")
-        for row in cur.fetchall():
-            t = row[0] if not isinstance(row, dict) else row.get(type_col)
-            if t in counts:
-                counts[t] = row["cnt"] if isinstance(row, dict) else row[1]
-    except Exception:
-        pass
-
-    # Read unmatched with adaptive columns
-    unmatched = read_adaptive_table(
-        results_path, _UNMATCHED_COLUMN_MAP, "unmatched",
-        row_factory=sqlite3.Row,
-    )
-
-    total_match_count = len(raw_results)
-    res_slice = raw_results[:effective_limit]
-    unm_slice = unmatched[:unmatched_limit] if (unmatched_limit is not None and unmatched_limit > 0) else unmatched
-
+        where += f' AND CAST("{ratio_col}" AS REAL) >= ?'
+        params += (min_ratio,)
+    sort_expr = f'CAST("{ratio_col}" AS REAL)' if sort_by == "ratio" else f'"{columns[sort_by]}"'
+    # rowid is a unique, stable final tie-breaker in official results tables.
+    order = f'{sort_expr} {sort_order.upper()}, rowid ASC'
+    total = conn.execute(f"SELECT count(*) FROM results WHERE {where}", params).fetchone()[0]
+    results = read_adaptive_table(results_path, _RESULTS_COLUMN_MAP, extra_where=where,
+                                  params=params, limit=limit, offset=offset, order_by=order)
+    counts = dict.fromkeys(MATCH_TYPES["all"], 0)
+    for kind, count in conn.execute(f'SELECT "{type_col}", count(*) FROM results GROUP BY "{type_col}"'):
+        if kind in counts:
+            counts[kind] = count
+    unmatched_columns = get_table_columns(results_path, "unmatched")
+    unmatched_count = conn.execute("SELECT count(*) FROM unmatched").fetchone()[0] if unmatched_columns else 0
+    unmatched = read_adaptive_table(results_path, _UNMATCHED_COLUMN_MAP, "unmatched",
+                                    limit=unmatched_limit, offset=unmatched_offset,
+                                    order_by="rowid ASC") if unmatched_columns else []
+    next_offset = offset + len(results) if offset + len(results) < total else None
+    next_unmatched = unmatched_offset + len(unmatched) if unmatched_offset + len(unmatched) < unmatched_count else None
     return {
-        "config": config_info,
-        "counts": counts,
-        "total_matches": total_match_count,
-        "unmatched_count": len(unmatched),
-        "results": res_slice,
-        "truncated": total_match_count > len(res_slice),
-        "unmatched": unm_slice,
-        "unmatched_truncated": len(unmatched) > len(unm_slice),
+        "config": dict(conn.execute("SELECT * FROM config LIMIT 1").fetchone() or {}),
+        "counts": counts, "total_matches": total, "unmatched_count": unmatched_count,
+        "results": results, "truncated": next_offset is not None,
+        "unmatched": unmatched, "unmatched_truncated": next_unmatched is not None,
+        "offset": offset, "unmatched_offset": unmatched_offset,
+        "next_offset": next_offset, "next_unmatched_offset": next_unmatched,
+        "sort_by": sort_by, "sort_order": sort_order,
     }
 
 
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
-def diff_diaphora_dbs(
-    db1_path: str,
-    db2_path: str,
-    output_path: str | None = None,
-) -> str:
-    """Diff two exported Diaphora databases and return the results."""
-    err1 = check_db_for_diff(db1_path)
-    if err1:
-        return err_json(f"db1 ({db1_path}): {err1}")
-    err2 = check_db_for_diff(db2_path)
-    if err2:
-        return err_json(f"db2 ({db2_path}): {err2}")
-
+def _prepare_diff(db1_path, db2_path, output_path):
+    from .export import _validate_export_output_path, _staged_export_path
+    db1_path, db2_path = os.path.abspath(db1_path), os.path.abspath(db2_path)
+    for label, path in [("db1", db1_path), ("db2", db2_path)]:
+        error = check_db_for_diff(path)
+        if error:
+            return None, None, {"error": f"{label}: {error}"}
     if not output_path:
         b1 = os.path.splitext(os.path.basename(db1_path))[0]
         b2 = os.path.splitext(os.path.basename(db2_path))[0]
-        output_path = os.path.join(
-            os.path.dirname(db1_path), f"{b1}_vs_{b2}.diaphora"
-        )
+        root = os.environ.get("DIAPHORA_OUTPUT_ROOT") or os.path.dirname(db1_path)
+        output_path = os.path.join(root, f"{b1}_vs_{b2}.diaphora")
+    output_path = os.path.abspath(output_path)
+    error = _validate_export_output_path(db1_path, output_path)
+    if error:
+        return None, None, {"error": error}
+    return output_path, _staged_export_path(output_path), None
 
-    desc = f"Diff {os.path.basename(db1_path)} vs {os.path.basename(db2_path)}"
-    with OperationLogger(desc, tag="diff") as log:
-        log.info(f"  db1: {db1_path}")
-        log.info(f"  db2: {db2_path}")
-        log.info(f"  out: {output_path}")
 
-        result_data = None  # Collects error result; None means continue to success
-        stdout_str = ""
-        stderr_str = ""
+def _diff_command(db1, db2, staged):
+    from ..utils.connection import close_connection
+    close_connection(db1)
+    close_connection(db2)
+    return [PYTHON, DIAPHORA_SCRIPT, os.path.abspath(db1), os.path.abspath(db2), "-o", os.path.abspath(staged)]
 
-        try:
-            from ..utils.connection import close_connection
-            close_connection(db1_path)
-            close_connection(db2_path)
-            close_connection(output_path)
-            start = time.time()
-            proc = subprocess.Popen(
-                [PYTHON, DIAPHORA_SCRIPT, db1_path, db2_path, "-o", output_path],
-                cwd=DIAPHORA_DIR,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-                text=True,
-            )
 
-            # Read stdout and stderr concurrently to avoid PIPE deadlock
-            stdout_chunks = []
-            stderr_chunks = []
+def _finish_diff(returncode, staged, target, limit=500, unmatched_limit=100):
+    from .export import _publish_staged_export
+    if returncode != 0:
+        return {"error": f"Diaphora diff failed with exit code {returncode}"}
+    if not os.path.isfile(staged):
+        return {"error": "Diaphora completed but did not produce an output file"}
+    error = check_results_db(staged)
+    if error:
+        return {"error": error}
+    # Read before publishing so corrupt/inaccessible results never become final outputs.
+    results = read_results(staged, limit=limit, unmatched_limit=unmatched_limit)
+    from ..utils.sqlite import resolve_columns
+    unmatched_columns = dict(resolve_columns(get_table_columns(staged, "unmatched"), _UNMATCHED_COLUMN_MAP))
+    type_column = unmatched_columns.get("type")
+    results["unmatched_counts"] = dict(get_connection(staged).execute(
+        f'SELECT "{type_column}", count(*) FROM unmatched GROUP BY "{type_column}"'
+    )) if type_column else {}
+    error = _publish_staged_export(staged, target)
+    return {"error": error} if error else results
 
-            def _read_pipe(pipe, chunks):
-                try:
-                    for line in pipe:
-                        chunks.append(line)
-                except Exception as e:
-                    log.warn(f"Pipe reader error: {e}")
 
-            t_out = threading.Thread(target=_read_pipe, args=(proc.stdout, stdout_chunks), daemon=True)
-            t_err = threading.Thread(target=_read_pipe, args=(proc.stderr, stderr_chunks), daemon=True)
-            t_out.start()
-            t_err.start()
-
-            proc.wait(timeout=3600)
-
-            t_out.join(timeout=2)
-            t_err.join(timeout=2)
-
-            stdout_str = "".join(stdout_chunks)
-            stderr_str = "".join(stderr_chunks)
-            elapsed = time.time() - start
-            log.info(f"diaphora.py exit code: {proc.returncode} ({elapsed:.0f}s)")
-            if proc.returncode != 0:
-                log.log_subprocess_output(stdout_str, stderr_str)
-
-        except subprocess.TimeoutExpired:
+def diff_diaphora_dbs(db1_path: str, db2_path: str, output_path: str | None = None) -> str:
+    """Compare old-primary and new-secondary exports without replacing artifacts."""
+    target, staged, error = _prepare_diff(db1_path, db2_path, output_path)
+    if error:
+        return dumps(error)
+    from .export import _remove_staged_export
+    proc = None
+    log = OperationLogger("Diaphora comparison", tag="diff")
+    log.__enter__()
+    stdout_tail, stderr_tail = [""], [""]
+    try:
+        proc = subprocess.Popen(_diff_command(db1_path, db2_path, staged),
+                                cwd=DIAPHORA_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                stdin=subprocess.DEVNULL, text=True,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        # Drain both pipes while waiting, preserving the timeout/kill contract.
+        def drain(pipe, tail):
+            try:
+                for line in pipe:
+                    tail[0] = (tail[0] + line)[-3000:]
+            except Exception:
+                pass
+        readers = [threading.Thread(target=drain, args=(pipe, tail), daemon=True)
+                   for pipe, tail in ((proc.stdout, stdout_tail), (proc.stderr, stderr_tail))]
+        for reader in readers:
+            reader.start()
+        proc.wait(timeout=3600)
+        for reader in readers:
+            reader.join(timeout=2)
+        log.info(f"Diff exit code: {proc.returncode}")
+        log.log_subprocess_output(stdout_tail[0], stderr_tail[0])
+        result = _finish_diff(proc.returncode, staged, target)
+        if "error" in result:
+            result.update(stdout_tail=stdout_tail[0], stderr_tail=stderr_tail[0])
+        return dumps(result)
+    except subprocess.TimeoutExpired:
+        return err_json("Diaphora diff timed out after 3600 s")
+    except Exception:
+        return err_json("Unable to run or read Diaphora diff")
+    finally:
+        if proc is not None and proc.poll() is None:
             _kill_and_reap(proc)
-            log.error("Diff timed out after 3600 s")
-            result_data = {"error": "Diaphora diff timed out after 3600 s"}
-        except FileNotFoundError:
-            log.error(f"diaphora.py not found at {DIAPHORA_SCRIPT}")
-            result_data = {"error": f"diaphora.py not found at {DIAPHORA_SCRIPT}"}
-        except Exception as exc:
-            log.error(f"Failed to launch Diaphora: {exc}")
-            result_data = {"error": f"Failed to launch Diaphora: {exc}"}
+        _remove_staged_export(staged)
+        log.__exit__(None, None, None)
 
-        if result_data:
-            return dumps(result_data)
 
-        if not os.path.isfile(output_path):
-            log.error("No output file produced")
-            return err_json(
-                "Diaphora completed but did not produce an output file",
-                {
-                    "stdout_tail": (stdout_str or "")[-3000:],
-                    "stderr_tail": (stderr_str or "")[-3000:],
-                }
-            )
-
-        out_size = os.path.getsize(output_path)
-        log.info(f"Output created: {out_size} bytes")
-
-        # Read result stats for the log
-        try:
-            conn = get_connection(output_path)
-            cur = conn.cursor()
-            cur.execute("SELECT type, count(*) FROM results GROUP BY type")
-            counts = dict(cur.fetchall())
-            log.info(f"Matches: {counts}")
-            cur.execute("SELECT count(*) FROM unmatched")
-            log.info(f"Unmatched: {cur.fetchone()[0]}")
-        except Exception:
-            pass
-
-    return dumps(read_results(output_path))
+async def _diff_diaphora_dbs_async(db1_path, db2_path, output_path, limit=500, unmatched_limit=100):
+    import asyncio
+    target, staged, error = _prepare_diff(db1_path, db2_path, output_path)
+    if error:
+        return error
+    from .export import _remove_staged_export
+    proc = None
+    log = OperationLogger("Diaphora comparison", tag="diff")
+    log.__enter__()
+    stdout_tail, stderr_tail = [""], [""]
+    try:
+        proc = subprocess.Popen(_diff_command(db1_path, db2_path, staged),
+                                cwd=DIAPHORA_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                stdin=subprocess.DEVNULL, text=True,
+                                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        stdout, stderr = await asyncio.wait_for(asyncio.to_thread(proc.communicate), timeout=3600)
+        log.info(f"Diff exit code: {proc.returncode}")
+        log.log_subprocess_output((stdout or "")[-3000:], (stderr or "")[-3000:])
+        result = _finish_diff(proc.returncode, staged, target, limit, unmatched_limit)
+        if "error" in result:
+            result.update(stdout_tail=(stdout or "")[-3000:], stderr_tail=(stderr or "")[-3000:])
+        return result
+    except asyncio.TimeoutError:
+        return {"error": "Diaphora diff timed out after 3600 s"}
+    except Exception:
+        return {"error": "Unable to run or read Diaphora diff"}
+    finally:
+        if proc is not None and proc.poll() is None:
+            _kill_and_reap(proc)
+        _remove_staged_export(staged)
+        log.__exit__(None, None, None)
 
 
 def get_diff_results(
@@ -287,6 +252,10 @@ def get_diff_results(
     min_ratio: float = 0.0,
     limit: int = 500,
     unmatched_limit: int = 100,
+    offset: int = 0,
+    unmatched_offset: int = 0,
+    sort_by: str = "ratio",
+    sort_order: str = "asc",
 ) -> str:
     """Return matches from a .diaphora results file, optionally filtered."""
     if not os.path.isfile(results_path):
@@ -296,7 +265,8 @@ def get_diff_results(
 
     try:
         return dumps(
-            read_results(results_path, match_type, min_ratio, limit, unmatched_limit)
+            read_results(results_path, match_type, min_ratio, limit, unmatched_limit,
+                         offset, unmatched_offset, sort_by, sort_order)
         )
     except Exception as exc:
         return err_json(f"Error reading results: {exc}")
@@ -313,13 +283,14 @@ def get_diff_summary(results_path: str) -> str:
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    cur.execute("SELECT * FROM config")
+    cur.execute("SELECT * FROM config LIMIT 1")
     config_info = dict(cur.fetchone() or {})
 
-    available = get_table_columns(results_path, "results")
-    # Determine the actual type and ratio column names
-    type_col = "type" if "type" in available else "match_type"
-    ratio_col = "ratio" if "ratio" in available else "similarity"
+    from ..utils.sqlite import resolve_columns
+    columns = dict(resolve_columns(get_table_columns(results_path, "results"), _RESULTS_COLUMN_MAP))
+    type_col, ratio_col = columns.get("type"), columns.get("ratio")
+    if not type_col or not ratio_col:
+        return err_json("Results schema missing type or ratio column")
 
     # Safe aggregation — use the actual type column
     agg_sql = (
@@ -340,15 +311,17 @@ def get_diff_summary(results_path: str) -> str:
     best_results = read_adaptive_table(
         results_path, _RESULTS_COLUMN_MAP, "results",
         extra_where=where_best,
-        row_factory=sqlite3.Row,
-    )[:10]
+        row_factory=sqlite3.Row, limit=10,
+        order_by=f"CAST({ratio_col} AS REAL) ASC, rowid ASC",
+    )
 
     where_partial = f"{type_col} = 'partial'"
     partial_results = read_adaptive_table(
         results_path, _RESULTS_COLUMN_MAP, "results",
         extra_where=where_partial,
-        row_factory=sqlite3.Row,
-    )[:10]
+        row_factory=sqlite3.Row, limit=10,
+        order_by=f"CAST({ratio_col} AS REAL) ASC, rowid ASC",
+    )
 
     # Unmatched counts
     try:

@@ -6,7 +6,7 @@
 2. Call `batch_export_and_diff` with `export_mode="headless"`, `use_decompiler=false`, and `summaries_only=true` for large databases.
 3. Keep the returned `.diaphora.sqlite` files and `.diaphora` result file together.
 4. Call `get_diff_summary` first, then use `get_diff_results` with a suitable `min_ratio` or `match_type`.
-5. Use `find_function_match` and `compare_functions` for a specific old address.
+5. Use `compare_functions` for a specific old address, with `match_results_path`.
 6. Pass `match_results_path` to address-aware comparison and graph tools when old/new image bases differ.
 7. Use `ida-pro-mcp`/`idalib-mcp` for low-level validation in the original IDA databases.
 
@@ -27,7 +27,7 @@ Then:
 
 ```text
 get_diff_summary(results_path=RESULTS)
-find_function_match(db1_path=OLD_SQLITE, db2_path=NEW_SQLITE, address="1800d6b80")
+get_diff_results(results_path=RESULTS, match_type="partial", limit=100, offset=0)
 compare_functions(
   db1_path=OLD_SQLITE,
   db2_path=NEW_SQLITE,
@@ -55,3 +55,13 @@ Use `export_mode="gui"` only for an intentionally open IDA session. The session 
 ## Interpreting matching
 
 `best`, `partial`, and `multimatch` are Diaphora result categories. Ratios and confidence are evidence for prioritization, not proof of semantic equivalence. Always inspect assembly, pseudocode where available, CFG, and call sites before making a security claim.
+
+## Reading all results
+
+`get_diff_results` has independent `offset` and `unmatched_offset`. Use returned `next_offset` and `next_unmatched_offset` to advance each list until null. Page sizes are positive integers capped at 5000; zero does not mean unlimited. Sorting is deterministic: `sort_by="ratio"`, `sort_order="asc"` puts lower similarity first. Use `sort_order="desc"` to inspect the strongest matches first. Counts describe the complete filtered set, not just the current page.
+
+## Output preservation
+
+Choose a fresh output directory or filenames for every run. Batch preflights all targets, validates both exports, and preserves pre-existing artifacts. For equal input basenames it prefixes the export filenames with `old_` and `new_`. `cleanup=true` only removes exports created by this operation; keep it false for later function inspection. Diff output is staged and only published after successful validation.
+
+A match file is authoritative when supplied: invalid files or missing/ambiguous matches do not silently fall back to equal addresses. Unmatched means not confidently paired, not necessarily removed or added.

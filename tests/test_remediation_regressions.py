@@ -399,5 +399,7 @@ def test_documented_tool_count_matches_registry():
     import diaphora_mcp
 
     registered = diaphora_mcp.mcp._tool_manager._tools
-    assert len(registered) == 21
-    assert "performance_report" in registered
+    from diaphora_mcp.diaphora_mcp_server import LEGACY_TOOLS_ENABLED
+    assert len(registered) == (21 if LEGACY_TOOLS_ENABLED else 10)
+    assert "compare_functions" in registered
+    assert ("performance_report" in registered) == LEGACY_TOOLS_ENABLED

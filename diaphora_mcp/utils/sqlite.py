@@ -17,6 +17,55 @@ from .connection import close_connection, get_connection
 # Schema-adaptive column resolution for .diaphora diff results
 # ---------------------------------------------------------------------------
 
+# Official Diaphora 3.4.1 db_support/schema.py; strict diff readiness.
+# Export-only program_data, userdata and export_time are intentionally optional.
+DIFF_REQUIRED_COLUMNS = {
+    "functions": tuple((
+        "id name address nodes edges indegree outdegree size instructions mnemonics "
+        "names prototype cyclomatic_complexity primes_value comment mangled_function "
+        "bytes_hash pseudocode pseudocode_lines pseudocode_hash1 pseudocode_primes "
+        "function_flags assembly prototype2 pseudocode_hash2 pseudocode_hash3 "
+        "strongly_connected loops rva tarjan_topological_sort strongly_connected_spp "
+        "clean_assembly clean_pseudo mnemonics_spp switches function_hash bytes_sum "
+        "md_index constants constants_count segment_rva assembly_addrs kgh_hash "
+        "source_file microcode clean_microcode microcode_spp"
+    ).split()),
+    "program": tuple((
+        "id callgraph_primes callgraph_all_primes processor md5sum"
+    ).split()),
+    "version": tuple((
+        "value"
+    ).split()),
+    "instructions": tuple((
+        "id func_id address disasm mnemonic comment1 comment2 operand_names name type "
+        "pseudocomment pseudoitp asm_type"
+    ).split()),
+    "basic_blocks": tuple((
+        "id num address asm_type"
+    ).split()),
+    "bb_relations": tuple((
+        "id parent_id child_id"
+    ).split()),
+    "bb_instructions": tuple((
+        "id basic_block_id instruction_id"
+    ).split()),
+    "function_bblocks": tuple((
+        "id function_id basic_block_id asm_type"
+    ).split()),
+    "callgraph": tuple((
+        "id func_id address type"
+    ).split()),
+    "constants": tuple((
+        "id func_id constant"
+    ).split()),
+    "compilation_units": tuple((
+        "id name functions primes_value pseudocode_primes start_ea end_ea"
+    ).split()),
+    "compilation_unit_functions": tuple((
+        "id cu_id func_id"
+    ).split()),
+}
+
 # Known column name variants across Diaphora versions
 _RESULTS_COLUMN_MAP = {
     # (standard_name, [variants...])
@@ -25,7 +74,7 @@ _RESULTS_COLUMN_MAP = {
     "address2": ["address2", "addr2", "target_address", "address_2"],
     "name2": ["name2", "target_name", "name_2", "func_name_2"],
     "ratio": ["ratio", "similarity", "match_ratio", "confidence"],
-    "type": ["type", "match_type"],
+    "type": ["type", "match_type", "result_type"],
     "nodes1": ["nodes1", "nodes_old", "nodes_primary"],
     "nodes2": ["nodes2", "nodes_new", "nodes_secondary"],
     "description": ["description", "desc", "notes"],
@@ -36,7 +85,7 @@ _UNMATCHED_COLUMN_MAP = {
     "name": ["name"],
     "address2": ["address2", "addr2", "target_address"],
     "name2": ["name2", "target_name"],
-    "type": ["type", "match_type"],
+    "type": ["type", "match_type", "result_type"],
     "address_new": ["address_new", "addr_new"],
 }
 
@@ -115,6 +164,9 @@ def read_adaptive_table(
     extra_where: str = "",
     params: tuple = (),
     row_factory=None,
+    limit: int | None = None,
+    offset: int = 0,
+    order_by: str = "",
 ) -> list:
     """Read rows from *table* in *db_path* using schema-adaptive queries.
 
@@ -128,14 +180,13 @@ def read_adaptive_table(
     cur = conn.cursor()
 
     sql, resolved = safe_results_query(db_path, column_map, table, extra_where)
-    try:
-        cur.execute(sql, params)
-    except Exception as exc:
-        # Last-resort fallback: try SELECT *
-        try:
-            cur.execute(f"SELECT * FROM {table}")
-        except Exception:
-            raise exc
+    if order_by:
+        sql += f" ORDER BY {order_by}"
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params = tuple(params) + (limit, offset)
+    # Never drop predicates or pagination on error.
+    cur.execute(sql, params)
 
     rows = []
     for raw in cur.fetchall():
@@ -148,7 +199,13 @@ def read_adaptive_table(
             except (ValueError, TypeError):
                 pass
 
-        rows.append(row_to_standard_dict(d, resolved))
+        standard = row_to_standard_dict(d, resolved)
+        if standard.get("ratio") is not None:
+            try:
+                standard["ratio"] = float(standard["ratio"])
+            except (ValueError, TypeError):
+                pass
+        rows.append(standard)
     return rows
 
 
@@ -158,12 +215,20 @@ def read_adaptive_table(
 def norm_addr(addr: str, use_decimal: bool = False) -> str:
     """Normalize a hex or decimal address to a lowercase hex string (no 0x prefix)."""
     s = addr.strip().lower()
-    if use_decimal and s.isdigit() and int(s) > 1000000:
+    if use_decimal and s.isdigit():
         return hex(int(s)).removeprefix("0x")
     return s.removeprefix("0x")
 
 
 def _detect_decimal(conn) -> bool:
+    # Official exports store address values in decimal, including small RVAs.
+    try:
+        if conn.execute(
+            "SELECT value FROM version WHERE value IS NOT NULL AND value != '' LIMIT 1"
+        ).fetchone() is not None:
+            return True
+    except sqlite3.Error:
+        pass
     try:
         cur = conn.cursor()
         cur.execute("SELECT address FROM functions LIMIT 1")
@@ -188,6 +253,20 @@ def get_query_addresses(conn_or_use_decimal, address: str) -> list[str]:
         use_decimal = conn_or_use_decimal
     else:
         use_decimal = _detect_decimal(conn_or_use_decimal)
+
+    cleaned = address.strip().lower()
+    if cleaned.startswith("0x"):
+        # An explicit radix is authoritative; decimal exports must not query
+        # the raw hexadecimal digits as an alternative decimal address.
+        try:
+            numeric = int(cleaned[2:], 16)
+        except ValueError:
+            return []
+        if numeric < 0:
+            return []
+        if use_decimal:
+            return [str(numeric)]
+        return list(dict.fromkeys([format(numeric, "x"), cleaned[2:]]))
 
     addr_hex = norm_addr(address, False)
     if not use_decimal:
@@ -255,7 +334,7 @@ def check_db(path: str) -> str | None:
 
 
 def check_db_for_diff(path: str) -> str | None:
-    """Strict check: DB must have data AND filled program table (for diff).
+    """Validate the supported official diff schema and finalized metadata.
 
     Diff requires callgraph_primes in the program table, which is only
     written at the very end of a successful headless export.  If the
@@ -275,9 +354,21 @@ def check_db_for_diff(path: str) -> str | None:
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-        if "program" not in tables:
+        missing_tables = sorted(set(DIFF_REQUIRED_COLUMNS) - tables)
+        if missing_tables:
             close_connection(path)
-            return "Unsupported diff schema: required table 'program' is missing"
+            return f"Unsupported diff schema: required tables missing: {', '.join(missing_tables)}"
+        for table, required in DIFF_REQUIRED_COLUMNS.items():
+            missing = sorted(set(required) - get_table_columns(path, table))
+            if missing:
+                close_connection(path)
+                return f"Unsupported diff schema: {table} missing columns: {', '.join(missing)}"
+        version = conn.execute(
+            "SELECT value FROM version WHERE value IS NOT NULL AND value != '' LIMIT 1"
+        ).fetchone()
+        if version is None:
+            close_connection(path)
+            return "Database export incomplete: version metadata is empty"
 
         cur.execute("SELECT count(*) FROM functions")
         funcs = cur.fetchone()[0]
@@ -338,7 +429,9 @@ def check_results_db(path: str) -> str | None:
         close_connection(path)
 
 
-def get_funcs_batch(db_path: str, addresses: list[str]) -> dict[str, dict]:
+def get_funcs_batch(
+    db_path: str, addresses: list[str], *, addresses_are_hex: bool = False,
+) -> dict[str, dict]:
     """Load multiple functions by address in batched queries.
 
     Automatically splits into chunks of 500 addresses to avoid SQLite's
@@ -346,10 +439,13 @@ def get_funcs_batch(db_path: str, addresses: list[str]) -> dict[str, dict]:
 
     Args:
         db_path: Path to a Diaphora .sqlite database.
-        addresses: List of address strings (hex, with or without 0x prefix).
+        addresses: List of address strings.
+        addresses_are_hex: Results/unmatched addresses are always hexadecimal;
+            convert them exactly to decimal for official exports, without
+            ambiguous raw-decimal fallbacks. Returned keys preserve inputs.
 
     Returns:
-        {address_normalized: func_dict, ...}
+        {original_input_address: func_dict, ...}
         Only addresses that exist in the database are returned.
     """
     if not addresses or not os.path.isfile(db_path):
@@ -359,18 +455,23 @@ def get_funcs_batch(db_path: str, addresses: list[str]) -> dict[str, dict]:
         conn = get_connection(db_path)
         use_decimal = _detect_decimal(conn)
 
-        norm = {}
-        for a in addresses:
-            key = norm_addr(a, False)
-            norm[key] = a
-
         result: dict[str, dict] = {}
-
-        # Build a list of (db_key, original_key) pairs
+        # Preserve every input alias, even when multiple selectors name one row.
         keys = []
-        for k, orig in norm.items():
-            for cand in get_query_addresses(use_decimal, orig):
-                keys.append((cand, orig))
+        for orig in dict.fromkeys(addresses):
+            if addresses_are_hex:
+                try:
+                    numeric = int(orig.strip().lower().removeprefix("0x"), 16)
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if numeric < 0:
+                    continue
+                candidates = [str(numeric)] if use_decimal else list(dict.fromkeys(
+                    [format(numeric, "x"), norm_addr(orig, False)]
+                ))
+            else:
+                candidates = get_query_addresses(use_decimal, orig)
+            keys.extend((candidate, orig) for candidate in candidates)
 
         # Process in chunks of 500 to avoid parameter-count limits
         chunk_size = 500
@@ -389,9 +490,9 @@ def get_funcs_batch(db_path: str, addresses: list[str]) -> dict[str, dict]:
             for row in cur.fetchall():
                 fd = dict(row)
                 addr = fd.get("address", "")
-                orig = next((o for k, o in chunk if k == addr), addr)
-                if orig:
-                    result[orig] = fd
+                for key, orig in chunk:
+                    if key == addr:
+                        result[orig] = fd
         return result
     except Exception:
         return {}

@@ -2,93 +2,268 @@
 
 # Diaphora MCP
 
-Diaphora MCP — локальный MCP-сервер, который соединяет AI-агентов с IDA Pro и Diaphora. Он экспортирует проанализированные базы IDA, запускает сравнение Diaphora и предоставляет инструменты для matching, call graph, ранжирования изменений, security triage и отчётов.
+Сравнивайте две версии бинарника, разобранные в IDA, прямо из ИИ-ассистента. MCP экспортирует сохранённые базы IDA, запускает [Diaphora](https://github.com/joxeankoret/diaphora) и даёт ИИ код соответствующих функций и изменения графа вызовов.
 
-> Это помощник для анализа, а не замена IDA Pro, Diaphora или ручной проверке реверс-инженером.
+По умолчанию доступны **10 инструментов** для сравнения. Diaphora сопоставляет функции, а ИИ читает настоящий код и объясняет изменения.
 
-## Рекомендуемый workflow
-
-Для сравнения и matching используйте headless-режим:
+[Быстрый старт](#быстрый-старт) · [Примеры](#примеры) · [Инструменты](#инструменты) · [Решение проблем](#решение-проблем)
 
 ```text
-IDB/i64
-  -> batch_export_and_diff(export_mode="headless")
-  -> .diaphora.sqlite + .diaphora
-  -> summary/results
-  -> matching, compare, graph и security tools
+old.i64 + new.i64 → headless-экспорт → SQLite-экспорты + результаты diff
+                                           ↓
+                                 сводка → код функций → граф вызовов
 ```
-
-Режимы экспорта:
-
-| Режим | Поведение |
-| --- | --- |
-| `headless` | Всегда использует `idat.exe`, проверяет официальную diff-схему; рекомендуется |
-| `auto` | Сначала пробует активный GUI bridge, затем headless |
-| `gui` | Требует активную GUI-сессию и не переходит в headless автоматически |
-
-`batch_export_and_diff` принимает только `export_mode="headless"`, поскольку matching требует полной официальной схемы Diaphora.
 
 ## Требования
 
-- Python 3.10+;
-- установленный IDA Pro с `idat.exe`/`idat64.exe`;
-- установленный в IDA плагин Diaphora;
-- MCP-совместимый клиент;
-- место на диске для SQLite exports и diff-файла.
+- Python 3.10+, IDA Pro с `idat.exe`/`idat64` и установленный плагин Diaphora.
+- Два бинарника, уже проанализированные и сохранённые в `.i64`/`.idb`.
+- Локальный MCP-клиент: например, Codex, Claude Code или Cursor.
+- Совместимый Hex-Rays — только если нужен псевдокод.
 
-IDA Pro и Diaphora не входят в этот репозиторий и устанавливаются отдельно.
+IDA и Diaphora устанавливаются отдельно. Проверка diff-схемы сейчас рассчитана на **Diaphora 3.4.1**; для других схем может понадобиться обновление совместимости. В Python, который запускает diff, должны быть установлены зависимости standalone-режима Diaphora.
 
-## Установка
+## Быстрый старт
 
-```bash
+### 1. Установить сервер и создать каталог результатов
+
+```powershell
 git clone https://github.com/xTeardx/diaphora-mcp.git
 cd diaphora-mcp
-python -m pip install -e .
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+New-Item -ItemType Directory -Force C:\diaphora-outputs | Out-Null
 ```
 
-Переменные окружения:
+### 2. Подключить MCP
+
+Добавьте запись в MCP-конфигурацию своего клиента. Замените пути к репозиторию, IDA и плагину на свои. Укажите Python из окружения, в котором установлен проект.
+
+```json
+{
+  "mcpServers": {
+    "diaphora": {
+      "command": "C:/src/diaphora-mcp/.venv/Scripts/python.exe",
+      "args": ["C:/src/diaphora-mcp/diaphora_mcp_server.py"],
+      "env": {
+        "IDAT_PATH": "C:/Program Files/IDA Professional 9.3/idat.exe",
+        "DIAPHORA_DIR": "C:/Program Files/IDA Professional 9.3/plugins/diaphora",
+        "DIAPHORA_OUTPUT_ROOT": "C:/diaphora-outputs"
+      }
+    }
+  }
+}
+```
+
+Клиент сам запускает сервер через stdio — отдельный веб-сервис поднимать не нужно. После изменения кода или переменных окружения перезапустите MCP. При успешном подключении будут видны 10 инструментов из таблицы ниже.
+
+### 3. Попросить ИИ сравнить файлы
 
 ```text
-IDAT_PATH=<absolute path to idat.exe>
-DIAPHORA_DIR=<directory containing Diaphora>
-DIAPHORA_OUTPUT_ROOT=<allowed output directory>
+Через Diaphora сравни C:/analysis/old.i64 — старую версию —
+с C:/analysis/new.i64 — новой. Результаты сохрани в
+C:/diaphora-outputs/run-001. Используй headless-экспорт с ассемблером,
+сохрани экспорты. Покажи сводку, затем просмотри partial matches
+и объясни изменения кода в интересных функциях.
+Для сравнения функций и графов используй mapping из результатов.
 ```
 
-Подробности: [Configuration](docs/CONFIGURATION.md) и [Workflows](docs/WORKFLOWS.md).
+Для каждого запуска выбирайте **новый каталог**. Существующие файлы экспорта и результатов не перезаписываются.
 
-## Первый diff
+## Примеры
+
+JSON ниже — **аргументы инструментов MCP**, а не команды терминала. ИИ может вызвать соответствующий инструмент напрямую. Пути и адрес `0x401000` приведены для примера: берите настоящие значения из результатов своего запуска.
+
+### 1. Экспортировать и сравнить две базы IDA
+
+Инструмент: **`batch_export_and_diff`**. Первый файл — старая версия, второй — новая.
+
+```json
+{
+  "idb1_path": "C:/analysis/old.i64",
+  "idb2_path": "C:/analysis/new.i64",
+  "output_dir": "C:/diaphora-outputs/run-001",
+  "export_mode": "headless",
+  "use_decompiler": false,
+  "summaries_only": false,
+  "cleanup": false,
+  "limit": 100,
+  "unmatched_limit": 50
+}
+```
+
+Этот вариант сохраняет ассемблер и не требует Hex-Rays. Выберите нужный профиль:
+
+| Детализация | `use_decompiler` | `summaries_only` | Для чего |
+| --- | --- | --- | --- |
+| Только сводки | `false` | `true` | Быстрый первый проход без подробного кода |
+| Ассемблер | `false` | `false` | Сравнение дизассемблированного кода без декомпилятора |
+| Ассемблер + псевдокод | `true` | `false` | Анализ с совместимым Hex-Rays; экспорт дольше |
+
+Сохраните пути из ответа:
 
 ```text
-batch_export_and_diff(
-  idb1_path="C:/analysis/old.i64",
-  idb2_path="C:/analysis/new.i64",
-  output_dir="C:/diaphora-outputs/run-001",
-  export_mode="headless",
-  use_decompiler=false,
-  summaries_only=true
-)
+OLD_SQLITE = steps.export1.output
+NEW_SQLITE = steps.export2.output
+RESULTS    = steps.diff.output
 ```
 
-В result tools передавайте только созданные `.diaphora.sqlite` и `.diaphora`. Файл `.i64` — это база IDA, а не SQLite results database.
+В этом примере внутри `run-001` появятся `old.diaphora.sqlite`, `new.diaphora.sqlite` и `old_vs_new.diaphora`. При одинаковых именах входных файлов экспорты получают разные префиксы `old_` и `new_`. Оставьте `cleanup=false`, если после diff хотите читать код функций.
 
-Для сопоставления функции используйте `find_function_match`, а для сравнения — `compare_functions` с `match_results_path`, чтобы адрес новой версии был взят из результатов Diaphora.
+### 2. Получить сводку и посмотреть изменённые совпадения
 
-## Ограничения
+Инструмент: **`get_diff_summary`**.
 
-- Matching эвристический и требует ручной проверки.
-- Security tools только выделяют сигналы и не доказывают наличие уязвимости или патча.
-- GUI-сессия может удерживать lock базы и блокировать второй процесс IDA.
-- Большие базы могут экспортироваться минуты или часы.
-- IDB, бинарники, SQLite exports, логи и crash artifacts нельзя добавлять в Git.
+```json
+{
+  "results_path": "C:/diaphora-outputs/run-001/old_vs_new.diaphora"
+}
+```
 
-Полный список ограничений: [docs/LIMITATIONS.md](docs/LIMITATIONS.md). Правила для AI-агентов: [AGENTS.md](AGENTS.md).
+Инструмент: **`get_diff_results`**. Здесь первыми идут partial matches с меньшим ratio.
+
+```json
+{
+  "results_path": "C:/diaphora-outputs/run-001/old_vs_new.diaphora",
+  "match_type": "partial",
+  "min_ratio": 0.0,
+  "limit": 50,
+  "offset": 0,
+  "unmatched_limit": 50,
+  "unmatched_offset": 0,
+  "sort_by": "ratio",
+  "sort_order": "asc"
+}
+```
+
+`partial` — категория сопоставления Diaphora, а не доказательство изменения поведения. Для всех поддерживаемых категорий используйте `match_type="all"`. В ответе есть статистика, полное количество подходящих совпадений, сами совпадения, несопоставленные функции, `next_offset` и `next_unmatched_offset`.
+
+Для следующей страницы перенесите возвращённые смещения в новый вызов, сохранив фильтры и сортировку. Например, если оба значения равны `50`, передайте `offset=50` и `unmatched_offset=50`. Значение `null` означает, что соответствующий список закончился; его смещение больше не увеличивайте. Списки листаются независимо. Размер страницы должен быть положительным, максимум — 5000. Для просмотра самых похожих совпадений сначала используйте `sort_order="desc"`.
+
+### 3. Сравнить функцию и её граф вызовов
+
+Инструмент: **`compare_functions`**.
+
+```json
+{
+  "db1_path": "C:/diaphora-outputs/run-001/old.diaphora.sqlite",
+  "db2_path": "C:/diaphora-outputs/run-001/new.diaphora.sqlite",
+  "address": "0x401000",
+  "match_results_path": "C:/diaphora-outputs/run-001/old_vs_new.diaphora"
+}
+```
+
+Ответ содержит `function_old`, `function_new`, доступный ассемблер/псевдокод, измеримые различия и основание сопоставления. Вместо `address` можно использовать `name`. Если переданы оба поля, приоритет у адреса: для поиска по имени уберите `address`.
+
+Инструмент **`get_changed_callgraph`** принимает те же аргументы из примера. Он сопоставляет адреса вызывающих и вызываемых функций перед сравнением, а неразрешённые связи показывает отдельно от подтверждённых изменений рёбер.
+
+Используйте адреса с **префиксом `0x`**, чтобы явно указать hex. Передавайте `match_results_path`, когда результат Diaphora доступен: так учитываются перенос адресов и переименования. Само совпадение адресов не доказывает соответствие функций. Неоднозначный или отсутствующий match остаётся неразрешённым, а не объявляется удалением. Для вручную проверенной пары можно явно передать `address2` или `name2`.
+
+### 4. Найти функцию и прочитать код
+
+Инструмент: **`search_export_db`**. В `name_pattern` используется SQL LIKE: `%` соответствует любой последовательности символов.
+
+```json
+{
+  "db_path": "C:/diaphora-outputs/run-001/old.diaphora.sqlite",
+  "name_pattern": "%parse%",
+  "min_instructions": 20,
+  "limit": 20
+}
+```
+
+Инструмент **`get_function_pseudocode`** возвращает доступный псевдокод **и ассемблер**, несмотря на название.
+
+```json
+{
+  "db_path": "C:/diaphora-outputs/run-001/old.diaphora.sqlite",
+  "address": "0x401000"
+}
+```
+
+Если псевдокод пустой, сделайте новый экспорт в другой каталог с `use_decompiler=true` и `summaries_only=false`, используя совместимый декомпилятор. Для информации об экспорте вызовите `get_export_info` с `db_path`.
+
+### 5. Сравнить готовые экспорты
+
+Инструмент: **`diff_diaphora_dbs`**. Повторный экспорт из IDA не нужен — используются готовые официальные SQLite-экспорты.
+
+```json
+{
+  "db1_path": "C:/diaphora-outputs/run-001/old.diaphora.sqlite",
+  "db2_path": "C:/diaphora-outputs/run-001/new.diaphora.sqlite",
+  "output_path": "C:/diaphora-outputs/another-diff.diaphora"
+}
+```
+
+Для одного нового экспорта используйте `export_idb_to_diaphora` с `idb_path`, новым `output_path` и `export_mode="headless"`.
+
+## Инструменты
+
+| Инструмент | Назначение |
+| --- | --- |
+| `export_idb_to_diaphora` | Экспорт одной сохранённой базы IDA |
+| `batch_export_and_diff` | Экспорт обеих баз и сравнение |
+| `diff_diaphora_dbs` | Сравнение готовых экспортов |
+| `get_diff_summary` | Статистика и короткие примеры |
+| `get_diff_results` | Результаты с фильтрами, сортировкой и страницами |
+| `get_export_info` | Метаданные и количество функций/инструкций |
+| `search_export_db` | Поиск функций |
+| `get_function_pseudocode` | Чтение ассемблера/псевдокода |
+| `compare_functions` | Сравнение сопоставленной пары |
+| `get_changed_callgraph` | Изменения сопоставленных связей вызовов |
+
+Точные сигнатуры доступны через MCP `tools/list`. Подробности: [справочник инструментов](docs/TOOLS.md).
+
+## Режимы экспорта и настройки
+
+| Режим | Поведение |
+| --- | --- |
+| `headless` | Запускает IDA без GUI и проверяет diff-схему; рекомендуется для сравнения |
+| `auto` | Сначала активный GUI-мост, затем headless при необходимости |
+| `gui` | Только нужная открытая GUI-сессия; без headless fallback |
+
+`batch_export_and_diff` требует `headless`.
+
+| Переменная окружения | Назначение |
+| --- | --- |
+| `IDAT_PATH` | Полный путь к headless-исполняемому файлу IDA |
+| `DIAPHORA_DIR` | Каталог со скриптами Diaphora |
+| `DIAPHORA_OUTPUT_ROOT` | Существующий корневой каталог для новых экспортов и результатов |
+| `DIAPHORA_PYTHON` | Python для diff; по умолчанию интерпретатор самого MCP |
+| `DIAPHORA_ENABLE_LEGACY_TOOLS` | Ровно `1` включает прежний интерфейс из 21 инструмента |
+
+Дополнительные matching, оценки, security-фильтры, отчёты, перенос метаданных и диагностика включаются отдельно. Добавьте эту запись в объект `env` конфигурации и перезапустите сервер:
+
+```json
+{
+  "DIAPHORA_ENABLE_LEGACY_TOOLS": "1"
+}
+```
+
+Это эвристические инструменты: оценки не доказывают одинаковое поведение, исправление уязвимости или причину изменений. [Настройки](docs/CONFIGURATION.md) · [Подключение GUI](GUI_INSTRUCTIONS.ru.md).
+
+## Решение проблем
+
+| Ситуация | Что сделать |
+| --- | --- |
+| Файл результата уже существует | Выбрать новый каталог запуска или имя файла |
+| Путь вне разрешённого корня | Выбрать путь внутри `DIAPHORA_OUTPUT_ROOT`; заранее создать корень |
+| В result tool передали IDB | Использовать возвращённый `.diaphora.sqlite` или `.diaphora` по назначению |
+| Соответствие отсутствует или неоднозначно | Проверить порядок старой/новой версии и mapping; изучить кандидатов вручную |
+| Пустой ассемблер/псевдокод | Проверить профиль и сделать новый подробный экспорт |
+| Экспорт или diff идут долго | Увеличить таймаут MCP-клиента, посмотреть локальные `logs/`, начать со сводок |
+| База заблокирована открытой IDA | Закрыть сессию или использовать GUI-режим для одиночного экспорта |
+| Схема не поддерживается | Переэкспортировать поддерживаемой версией Diaphora; проверить отсутствующие таблицы/поля |
+
+Matching остаётся эвристическим: высокий ratio — основание для проверки, а не доказательство. Несопоставленные функции не считаются подтверждёнными добавлениями/удалениями. Бинарники, IDB, экспорты и логи не добавляйте в Git. [Workflow](docs/WORKFLOWS.md) · [Ограничения](docs/LIMITATIONS.md) · [Безопасность](SECURITY.md).
 
 ## Разработка
 
 ```powershell
-python -m pytest -q
-python -m compileall -q .
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m compileall -q .
 git diff --check
 ```
 
-Подробные инструкции для contributors находятся в [CONTRIBUTING.md](CONTRIBUTING.md).
+Регрессионные тесты используют синтетические базы и подменённые процессы IDA. Настоящий экспорт через IDA проверяется отдельно на локальной установке. [Участие в проекте](CONTRIBUTING.md) · [Инструкции агентам](AGENTS.md).

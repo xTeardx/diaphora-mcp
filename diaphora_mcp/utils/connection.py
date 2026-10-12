@@ -13,8 +13,6 @@ import os
 import sqlite3
 import threading
 from collections import OrderedDict
-from contextlib import contextmanager
-from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Thread-local storage
@@ -77,43 +75,6 @@ def close_all():
     for conn in _local.connections.values():
         conn.close()
     _local.connections.clear()
-
-
-# ---------------------------------------------------------------------------
-# Convenience wrappers
-# ---------------------------------------------------------------------------
-
-@contextmanager
-def using_connection(db_path: str):
-    """Context manager yielding a configured connection for *db_path*.
-
-    Usage::
-
-        with using_connection("/path/to/db.sqlite") as conn:
-            cur = conn.cursor()
-            ...
-    """
-    conn = get_connection(db_path)
-    try:
-        yield conn
-    finally:
-        pass  # connection is cached, not closed
-
-
-@contextmanager
-def using_cursor(db_path: str):
-    """Context manager yielding a cursor from the cached connection.
-
-    Usage::
-
-        with using_cursor("/path/to/db.sqlite") as cur:
-            cur.execute("SELECT ...")
-    """
-    conn = get_connection(db_path)
-    try:
-        yield conn.cursor()
-    finally:
-        pass
 
 
 # ---------------------------------------------------------------------------

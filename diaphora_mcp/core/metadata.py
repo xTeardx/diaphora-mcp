@@ -13,7 +13,7 @@ import sqlite3
 from ..utils.sqlite import check_db, norm_addr, read_adaptive_table, _RESULTS_COLUMN_MAP, _detect_decimal
 from ..utils.connection import get_connection
 from ..utils.format import dumps, err_json
-from .mapping import FunctionMapping, canonical_address
+from .mapping import FunctionMapping, canonical_address, resolve_pair
 
 
 def transfer_metadata(
@@ -43,11 +43,11 @@ def transfer_metadata(
 
     # Build address mapping
     mapping = None
-    if match_results_path and os.path.isfile(match_results_path):
+    if match_results_path:
         try:
             mapping = FunctionMapping.from_results(match_results_path)
-        except (FileNotFoundError, ValueError) as exc:
-            return err_json(f"Invalid match results: {exc}")
+        except (OSError, ValueError, sqlite3.Error):
+            return err_json("Cannot load a valid Diaphora identity mapping")
 
     items = []
 
@@ -58,7 +58,8 @@ def transfer_metadata(
         if mapping:
             match = mapping.by_old(source_address)
             return match.new_address if match else None
-        return canonical_address(source_address, decimal_database=use_dec_src)
+        _, target, _, _ = resolve_pair(source_db_path, target_db_path, "0x" + canonical_address(source_address, decimal_database=use_dec_src))
+        return canonical_address(target["address"], decimal_database=_detect_decimal(get_connection(target_db_path))) if target else None
 
     skipped_unmapped = 0
 

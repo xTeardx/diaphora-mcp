@@ -11,7 +11,7 @@ import sqlite3
 from ..utils.sqlite import check_db, get_func, get_funcs_batch, get_callgraph, resolve_func_names, norm_addr, _detect_decimal, get_query_addresses
 from ..utils.connection import get_connection
 from ..utils.format import pseudocode_simple_diff, func_features, dumps, err_json
-from .mapping import FunctionMapping
+from .mapping import FunctionMapping, resolve_pair, compare_neighbors
 
 
 # ---------------------------------------------------------------------------
@@ -200,56 +200,14 @@ def compare_functions(
     if not address and not name:
         return err_json("Provide either address or name")
 
-    def _lookup(db_path, lookup_addr, lookup_name):
-        conn = get_connection(db_path)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-
-        if lookup_addr:
-            addrs = get_query_addresses(conn, lookup_addr)
-            placeholders = ",".join("?" for _ in addrs)
-            cur.execute(
-                f"""SELECT name, address, pseudocode, assembly, prototype,
-                           instructions, cyclomatic_complexity, nodes, edges,
-                           bytes_hash, constants
-                    FROM functions WHERE address IN ({placeholders})""",
-                addrs,
-            )
-        elif lookup_name:
-            cur.execute(
-                """SELECT name, address, pseudocode, assembly, prototype,
-                          instructions, cyclomatic_complexity, nodes, edges,
-                          bytes_hash, constants
-                   FROM functions WHERE name = ?""",
-                (lookup_name,),
-            )
-
-        row = cur.fetchone()
-        return dict(row) if row else None
-
-    func1 = _lookup(db1_path, address, name)
+    try:
+        func1, func2, identity, _ = resolve_pair(db1_path, db2_path, address, name, address2, name2, match_results_path)
+    except ValueError as exc:
+        return err_json(str(exc))
     if not func1:
-        return err_json(f"Function not found in primary database (address={address}, name={name})")
-
-    if match_results_path and not address2 and not name2:
-        try:
-            mapping = FunctionMapping.from_results(match_results_path)
-            mapped = mapping.by_old(address)
-            if mapped:
-                address2 = mapped.new_address
-                name2 = mapped.new_name
-        except (FileNotFoundError, ValueError):
-            pass
-
-    func2 = _lookup(db2_path, address2 or address, name2 or name)
+        return err_json("Primary function selector is missing or ambiguous")
     if not func2:
-        return dumps(
-            {
-                "warning": "Function not found in secondary database",
-                "primary": func1,
-                "secondary": None,
-            }
-        )
+        return dumps({"warning": "Secondary identity is unresolved; no deletion is inferred", "identity": identity, "primary": func1, "secondary": None})
 
     def _short(row):
         return {
@@ -267,6 +225,7 @@ def compare_functions(
 
     return dumps(
         {
+            "identity": identity,
             "function_old": _short(func1),
             "function_new": _short(func2),
             "comparison": {
@@ -287,202 +246,20 @@ def compare_functions(
     )
 
 
-def find_function_match(
-    db1_path: str,
-    db2_path: str,
-    address: str = "",
-    name: str = "",
-) -> str:
-    """Locate the matching function in the second (new) binary given a
-    reference in the first (old) binary."""
-    err1 = check_db(db1_path)
-    if err1:
-        return err_json(err1)
-    err2 = check_db(db2_path)
-    if err2:
-        return err_json(err2)
-
-    if not address and not name:
-        return err_json("Provide either address or name")
-
-    func1 = get_func(db1_path, address, name)
-    if not func1:
-        return err_json(f"Function not found in primary database (addr={address}, name={name})")
-
-    addr = func1["address"]
-    fname = func1["name"]
-    candidates = []
-    strategies = []
-
-    # 1. Exact address match
-    func2 = get_func(db2_path, address=addr)
-    if func2:
-        candidates.append((func2, 1.0, "exact_address"))
-        strategies.append("exact_address")
-
-    # 2. Exact name match
-    if fname and not fname.startswith("sub_"):
-        func2 = get_func(db2_path, name=fname)
-        if func2:
-            if not any(c["address"] == func2["address"] for c, _, _ in candidates):
-                candidates.append((func2, 0.95, "exact_name"))
-                strategies.append("exact_name")
-
-    # 3. Bytes hash match
-    bh = func1.get("bytes_hash", "")
-    if bh:
-        conn2 = get_connection(db2_path)
-        conn2.row_factory = sqlite3.Row
-        cur2 = conn2.cursor()
-        cur2.execute(
-            "SELECT address, name, pseudocode, assembly, prototype, "
-            "instructions, nodes, edges, cyclomatic_complexity, bytes_hash, "
-            "constants, mnemonics, loops, strongly_connected, names, "
-            "pseudocode_hash1, pseudocode_hash2 "
-            "FROM functions WHERE bytes_hash = ?", (bh,)
-        )
-        for row in cur2.fetchall():
-            fd = dict(row)
-            if not any(c["address"] == fd["address"] for c, _, _ in candidates):
-                candidates.append((fd, 0.9, "bytes_hash"))
-                strategies.append("bytes_hash")
-
-    # 4. Prototype match
-    proto = func1.get("prototype", "")
-    if proto and len(proto) > 5:
-        conn2 = get_connection(db2_path)
-        conn2.row_factory = sqlite3.Row
-        cur2 = conn2.cursor()
-        cur2.execute(
-            "SELECT address, name, pseudocode, assembly, prototype, "
-            "instructions, nodes, edges, cyclomatic_complexity, bytes_hash, "
-            "constants, mnemonics, loops, strongly_connected, names, "
-            "pseudocode_hash1, pseudocode_hash2 "
-            "FROM functions WHERE prototype = ?", (proto,)
-        )
-        for row in cur2.fetchall():
-            fd = dict(row)
-            if not any(c["address"] == fd["address"] for c, _, _ in candidates):
-                candidates.append((fd, 0.7, "prototype"))
-                strategies.append("prototype")
-
-    # 5. Heuristic: closest by feature vector
-    feat1 = func_features(func1)
-    conn2 = get_connection(db2_path)
-    conn2.row_factory = sqlite3.Row
-    cur2 = conn2.cursor()
-    cur2.execute(
-        "SELECT address, name, pseudocode, assembly, prototype, "
-        "instructions, nodes, edges, cyclomatic_complexity, bytes_hash, "
-        "constants, mnemonics, loops, strongly_connected, names, "
-        "pseudocode_hash1, pseudocode_hash2 "
-        "FROM functions WHERE instructions BETWEEN ? AND ?",
-        (max(0, feat1["instructions"] - 10), feat1["instructions"] + 10),
-    )
-    heuristic_candidates = []
-    for row in cur2.fetchall():
-        fd = dict(row)
-        if any(c["address"] == fd["address"] for c, _, _ in candidates):
-            continue
-        feat2 = func_features(fd)
-        score = 0.0
-        if feat1["nodes"] == feat2["nodes"]:
-            score += 0.15
-        elif abs(feat1["nodes"] - feat2["nodes"]) <= 2:
-            score += 0.08
-        if feat1["edges"] == feat2["edges"]:
-            score += 0.15
-        elif abs(feat1["edges"] - feat2["edges"]) <= 2:
-            score += 0.08
-        if feat1["cyclomatic_complexity"] == feat2["cyclomatic_complexity"]:
-            score += 0.10
-        if feat1["loops"] == feat2["loops"]:
-            score += 0.05
-        if feat1["mnemonics"] and feat1["mnemonics"] == feat2["mnemonics"]:
-            score += 0.20
-        if feat1["constants"] and feat1["constants"] == feat2["constants"]:
-            score += 0.15
-        if feat1["prototype"] and feat1["prototype"] == feat2["prototype"]:
-            score += 0.20
-        heuristic_candidates.append((fd, score))
-
-    heuristic_candidates.sort(key=lambda x: -x[1])
-    for fd, sc in heuristic_candidates[:3]:
-        if sc >= 0.5:
-            if not any(c["address"] == fd["address"] for c, _, _ in candidates):
-                candidates.append((fd, round(sc, 2), "heuristic_features"))
-                if "heuristic" not in strategies:
-                    strategies.append("heuristic")
-                break
-
-    if not candidates:
-        if fname:
-            conn2 = get_connection(db2_path)
-            cur2 = conn2.cursor()
-            cur2.execute("SELECT name, address FROM functions WHERE name LIKE ?",
-                         (f"%{fname[:16]}%",))
-            similar = [{"name": r[0], "address": r[1]} for r in cur2.fetchall()[:10]]
-        else:
-            similar = []
-        return dumps({
-            "matched": False,
-            "primary_function": {
-                "name": func1["name"],
-                "address": func1["address"],
-            },
-            "similar_named_in_secondary": similar,
-            "strategies_tried": strategies,
-        })
-
-    candidates.sort(key=lambda x: -x[1])
-    func2, confidence, method = candidates[0]
-
-    feat1 = func_features(func1)
-    feat2 = func_features(func2)
-
-    return dumps({
-        "matched": True,
-        "confidence": confidence,
-        "method": method,
-        "strategies_tried": strategies,
-        "primary_function": {
-            "name": func1["name"],
-            "address": func1["address"],
-            "prototype": func1.get("prototype", ""),
-            "instructions": func1.get("instructions", 0),
-            "cyclomatic_complexity": func1.get("cyclomatic_complexity", 0),
-        },
-        "matched_function": {
-            "name": func2["name"],
-            "address": func2["address"],
-            "prototype": func2.get("prototype", ""),
-            "instructions": func2.get("instructions", 0),
-            "cyclomatic_complexity": func2.get("cyclomatic_complexity", 0),
-        },
-        "comparison": {
-            "nodes": (feat1["nodes"], feat2["nodes"]),
-            "edges": (feat1["edges"], feat2["edges"]),
-            "instructions": (feat1["instructions"], feat2["instructions"]),
-            "complexity": (feat1["cyclomatic_complexity"], feat2["cyclomatic_complexity"]),
-            "hash_match": feat1["bytes_hash"] == feat2["bytes_hash"],
-            "prototype_match": feat1["prototype"] == feat2["prototype"],
-        },
-        "evidence": (
-            f"Primary: {func1['name']} @ 0x{func1['address']} "
-            f"({func1.get('instructions', 0)} insns, "
-            f"CC={func1.get('cyclomatic_complexity', 0)})\n"
-            f"Match:  {func2['name']} @ 0x{func2['address']} "
-            f"({func2.get('instructions', 0)} insns, "
-            f"CC={func2.get('cyclomatic_complexity', 0)})\n"
-            f"Method: {method} (confidence {confidence:.0%})"
-        ),
-        "ida_pro_mcp": {
-            "db1": db1_path,
-            "db2": db2_path,
-            "addr1": func1["address"],
-            "addr2": func2["address"],
-        },
-    })
+def find_function_match(db1_path: str, db2_path: str, address: str = "", name: str = "", match_results_path: str = "") -> str:
+    """Find an identity candidate from mapping or unique heuristic evidence."""
+    for path in (db1_path, db2_path):
+        if error := check_db(path):
+            return err_json(error)
+    try:
+        old, new, identity, _ = resolve_pair(db1_path, db2_path, address, name, match_results_path=match_results_path)
+    except ValueError as exc:
+        return err_json(str(exc))
+    if not old:
+        return err_json("Primary function selector is missing or ambiguous")
+    return dumps({"matched": new is not None, "method": identity["method"], "identity": identity,
+                  "primary_function": old, "matched_function": new,
+                  "note": "Identity evidence requires manual validation; it is not calibrated confidence."})
 
 
 def explain_similarity(
@@ -492,6 +269,7 @@ def explain_similarity(
     name: str = "",
     address2: str = "",
     name2: str = "",
+    match_results_path: str = "",
 ) -> str:
     """Compare two matched functions and explain the similarity score."""
     err1 = check_db(db1_path)
@@ -504,38 +282,17 @@ def explain_similarity(
     if not address and not name:
         return json.dumps({"error": "Provide either address or name"})
 
-    # Resolve address1 (primary database)
-    address1 = address
-    if not address1 and name:
-        f1 = get_func(db1_path, name=name)
-        if f1:
-            address1 = f1["address"]
-
-    if not address1:
-        return json.dumps({"error": "Could not resolve address in primary database"})
-
-    # Resolve address2 (secondary database)
-    address2_resolved = address2
-    if not address2_resolved:
-        if name2:
-            f2 = get_func(db2_path, name=name2)
-            if f2:
-                address2_resolved = f2["address"]
-        else:
-            if name:
-                f2 = get_func(db2_path, name=name)
-                if f2:
-                    address2_resolved = f2["address"]
-            if not address2_resolved:
-                address2_resolved = address1
-
-    f1 = get_func(db1_path, address=address1)
+    try:
+        f1, f2, identity, mapping = resolve_pair(db1_path, db2_path, address, name, address2, name2, match_results_path)
+    except ValueError as exc:
+        return err_json(str(exc))
     if not f1:
-        return json.dumps({"error": f"Function at 0x{address1} not found in db1"})
-
-    f2 = get_func(db2_path, address=address2_resolved)
+        return err_json("Primary function selector is missing or ambiguous")
     if not f2:
-        return json.dumps({"error": f"Function at 0x{address2_resolved} not found in db2"})
+        return dumps({"change_type": "unknown", "identity": identity, "function_old": f1,
+                      "description": "Secondary identity is unresolved; no deletion is inferred"})
+    address1 = f1["address"]
+    address2_resolved = f2["address"]
 
     features1 = func_features(f1)
     features2 = func_features(f2)
@@ -596,16 +353,22 @@ def explain_similarity(
     cg2 = get_callgraph(db2_path, address2_resolved)
     ce1 = set(cg1["callees"])
     ce2 = set(cg2["callees"])
-    callee_sim = len(ce1 & ce2) / max(len(ce1 | ce2), 1) if (ce1 or ce2) else 0
+    callee_delta = compare_neighbors(db1_path, db2_path, ce1, ce2, mapping)
+    callee_sim = callee_delta["unchanged"] / max(len(ce1) + len(ce2) - callee_delta["unchanged"], 1)
     cr1 = set(cg1["callers"])
     cr2 = set(cg2["callers"])
-    caller_sim = len(cr1 & cr2) / max(len(cr1 | cr2), 1) if (cr1 or cr2) else 0
+    caller_delta = compare_neighbors(db1_path, db2_path, cr1, cr2, mapping)
+    caller_sim = caller_delta["unchanged"] / max(len(cr1) + len(cr2) - caller_delta["unchanged"], 1)
     callgraph_score = round((callee_sim * 0.6 + caller_sim * 0.4) * 100, 1)
     factors.append({
         "factor": "callgraph",
         "weight": 10,
         "match": callgraph_score >= 80,
         "detail": f"callees: {len(ce1)}→{len(ce2)} ({callee_sim:.0%}), callers: {len(cr1)}→{len(cr2)} ({caller_sim:.0%})",
+        "unknown_callees_old": callee_delta["unknown_old"],
+        "unknown_callees_new": callee_delta["unknown_new"],
+        "unknown_callers_old": caller_delta["unknown_old"],
+        "unknown_callers_new": caller_delta["unknown_new"],
         "callee_similarity": round(callee_sim, 2),
         "caller_similarity": round(caller_sim, 2),
         "overall_score": callgraph_score,
@@ -658,11 +421,8 @@ def explain_similarity(
             "address": f2.get("address", ""),
         },
         "estimated_similarity": estimated_similarity,
-        "note": (
-            "This is an approximation based on feature comparison. "
-            "Diaphora's actual ratio uses internal heuristics and "
-            "pseudocode comparison." if estimated_similarity else ""
-        ),
+        "identity": identity,
+        "note": "Feature overlap is heuristic evidence, not calibrated confidence or proof of semantic equivalence.",
         "factors": factors,
         "matching_factors": [f["factor"] for f in factors if f.get("match")],
         "differing_factors": [f["factor"] for f in factors if not f.get("match")],
@@ -676,6 +436,7 @@ def detect_behavior_change(
     name: str = "",
     address2: str = "",
     name2: str = "",
+    match_results_path: str = "",
 ) -> str:
     """Analyse a single function across two versions and describe what behaviour changed."""
     err1 = check_db(db1_path)
@@ -688,59 +449,17 @@ def detect_behavior_change(
     if not address and not name:
         return err_json("Provide either address or name")
 
-    # Resolve address1 (primary database)
-    address1 = address
-    if not address1 and name:
-        f1 = get_func(db1_path, name=name)
-        if f1:
-            address1 = f1["address"]
-        else:
-            return err_json(f"Function '{name}' not found in db1")
-
-    # Resolve address2 (secondary database)
-    address2_resolved = address2
-    if not address2_resolved:
-        if name2:
-            f2 = get_func(db2_path, name=name2)
-            if f2:
-                address2_resolved = f2["address"]
-        else:
-            if name:
-                f2 = get_func(db2_path, name=name)
-                if f2:
-                    address2_resolved = f2["address"]
-            if not address2_resolved:
-                address2_resolved = address1
-
-    f1 = get_func(db1_path, address=address1)
-    f2 = get_func(db2_path, address=address2_resolved)
-
-    if not f1 and not f2:
-        return err_json(f"Function 0x{address1} / 0x{address2_resolved} not found in either database")
-
+    try:
+        f1, f2, identity, mapping = resolve_pair(db1_path, db2_path, address, name, address2, name2, match_results_path)
+    except ValueError as exc:
+        return err_json(str(exc))
     if not f1:
-        return dumps({
-            "change_type": "new_function",
-            "address": address2_resolved,
-            "function_new": {
-                "name": f2.get("name", ""),
-                "instructions": f2.get("instructions", 0),
-                "complexity": f2.get("cyclomatic_complexity", 0),
-            },
-            "description": f"Function NEW in the update — not present in the old binary",
-        })
-
+        return err_json("Primary function selector is missing or ambiguous")
     if not f2:
-        return dumps({
-            "change_type": "deleted_function",
-            "address": address1,
-            "function_old": {
-                "name": f1.get("name", ""),
-                "instructions": f1.get("instructions", 0),
-                "complexity": f1.get("cyclomatic_complexity", 0),
-            },
-            "description": f"Function REMOVED in the update — present only in the old binary",
-        })
+        return dumps({"change_type": "unknown", "identity": identity, "function_old": f1,
+                      "description": "Secondary identity is unresolved; no deletion is inferred"})
+    address1 = f1["address"]
+    address2_resolved = f2["address"]
 
     name1 = f1.get("name", "")
     name2 = f2.get("name", "")
@@ -753,8 +472,9 @@ def detect_behavior_change(
 
     cg1 = get_callgraph(db1_path, address1)
     cg2 = get_callgraph(db2_path, address2_resolved)
-    added_callees = set(cg2["callees"]) - set(cg1["callees"])
-    removed_callees = set(cg1["callees"]) - set(cg2["callees"])
+    neighbor_delta = compare_neighbors(db1_path, db2_path, cg1["callees"], cg2["callees"], mapping)
+    added_callees = set(neighbor_delta["added"])
+    removed_callees = set(neighbor_delta["removed"])
 
     consts1_str = f1.get("constants", "") or ""
     consts2_str = f2.get("constants", "") or ""
@@ -828,6 +548,8 @@ def detect_behavior_change(
         "function_name_new": name2,
         "address": address1,
         "change_type": "modified",
+        "identity": identity,
+        "analysis_note": "Observed feature and text changes are heuristic evidence, not proof of semantic behavior.",
         "changes": changes,
         "description": "; ".join(changes) if changes else "Minor or no detectable change",
         "metrics": {
@@ -839,6 +561,8 @@ def detect_behavior_change(
             "pseudo_changed_pct": pseudo_change_pct,
         },
         "callgraph_delta": {
+            "unknown_old": neighbor_delta["unknown_old"],
+            "unknown_new": neighbor_delta["unknown_new"],
             "added_callees": sorted(added_callees)[:10],
             "removed_callees": sorted(removed_callees)[:10],
         },

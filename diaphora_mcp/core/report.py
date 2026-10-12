@@ -58,8 +58,8 @@ def summarize_patch(
 
     addrs1 = [r.get("address", "") for r in results]
     addrs2 = [r.get("address2", "") for r in results]
-    funcs1 = get_funcs_batch(db1_path, addrs1) if db1_path else {}
-    funcs2 = get_funcs_batch(db2_path, addrs2) if db2_path else {}
+    funcs1 = get_funcs_batch(db1_path, addrs1, addresses_are_hex=True) if db1_path else {}
+    funcs2 = get_funcs_batch(db2_path, addrs2, addresses_are_hex=True) if db2_path else {}
 
     for r in results:
         addr1 = r.get("address", "")
@@ -109,6 +109,8 @@ def summarize_patch(
     unmatched_secondary = [u for u in unmatched if u.get("type") == "secondary"]
 
     return dumps({
+        "heuristic_only": True,
+        "note": "Keyword matches do not establish changed security behavior. Unmatched functions are not proven additions or deletions.",
         "report_title": "Diaphora Patch Analysis Report",
         "binaries": {
             "primary": {
@@ -154,8 +156,8 @@ def summarize_patch(
         "recommendations": [
             f"Found {by_type.get('best', 0)} best, {by_type.get('partial', 0)} partial, "
             f"{by_type.get('unreliable', 0)} unreliable matches.",
-            f"{sec_count} function(s) have security-relevant changes ({sorted(sec_categories) if sec_categories else 'none'}).",
-            f"{len(unmatched_primary)} function(s) removed, {len(unmatched_secondary)} added.",
+            f"{sec_count} matched function(s) contain security-related keywords ({sorted(sec_categories) if sec_categories else 'none'}).",
+            f"{len(unmatched_primary)} unmatched in primary, {len(unmatched_secondary)} unmatched in secondary; inspect before inferring additions or deletions.",
             "Use rank_changes for a sorted priority list, find_patch_root for root cause candidates, "
             "or analyze_diff_results for detailed security filtering.",
         ],
