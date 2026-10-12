@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bounded the MCP Python SDK dependency to 1.x, preserving the FastMCP API on clean installs.
 - Reduced the default MCP surface to 10 comparison tools; the previous 21 tools remain opt-in through `DIAPHORA_ENABLE_LEGACY_TOOLS=1`.
 - Protected batch/diff outputs with preflight validation, staging, exclusive publication and ownership-based cleanup; preserved cancellation and rejected failed subprocess results.
 - Removed address-only identity guesses and made cross-version function/graph resolution use authoritative mappings, with explicit ambiguity handling.
